@@ -5,76 +5,176 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WebAR Indoor (marcadores)</title>
 
-  <!-- Bibliotecas e dados hospedados localmente (pastas lib/ e data/), sem depender de CDNs -->
+  <!-- Bibliotecas e dados hospedados localmente (pastas lib/ e data/) -->
   <script src="lib/aframe.min.js"></script>
   <script src="lib/aframe-ar.js"></script>
 
   <style>
-    /* Sem background e sem height em html/body: o AR.js insere o <video> da câmera atrás da cena
-       e controla o tamanho dele; um fundo opaco o esconderia. */
+    /* Sem background em html/body: o AR.js insere o <video> atrás da cena e controla o tamanho dele. */
     body { margin: 0; overflow: hidden; font: 16px system-ui, sans-serif; }
-    #hud { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 14px; color: #fff;
+    #config { position: fixed; inset: 0; z-index: 10000; overflow-y: auto; padding: 20px;
+              background: #10231a; color: #fff; }
+    #config .caixa { max-width: 30rem; margin: 0 auto; }
+    #config h1 { font-size: 1.3rem; margin: 0 0 8px; }
+    #config p, #config label { font-size: .95rem; }
+    #config label { display: block; margin: 14px 0 4px; font-weight: 600; }
+    #config select, #config button { font: inherit; width: 100%; padding: 12px; border-radius: 10px; border: 0; }
+    #config select { background: #fff; color: #111; }
+    #config button { background: #5fd49a; color: #06241a; margin-top: 10px; }
+    #config button.sec { background: transparent; color: #5fd49a; border: 1px solid #5fd49a; }
+    #config button:focus-visible, #config select:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+    #config .chk { display: flex; gap: 10px; align-items: center; margin-top: 14px; font-weight: 400; }
+    #config .chk input { width: 20px; height: 20px; }
+    #hud { position: fixed; left: 0; right: 0; bottom: 0; padding: 8px 14px; color: #fff; display: none;
            background: rgba(0,0,0,.7); z-index: 9999; font-size: 14px; }
+    #info { opacity: .75; font-size: 12px; }
   </style>
 </head>
 <body>
-  <div id="hud" aria-live="polite">Iniciando a câmera…</div>
 
-  <!-- cameraParametersUrl e os marcadores (type="pattern") apontam para arquivos locais -->
-  <a-scene embedded vr-mode-ui="enabled: false"
-           arjs="sourceType: webcam; debugUIEnabled: false; cameraParametersUrl: data/camera_para.dat;">
+  <div id="config">
+    <div class="caixa">
+      <h1>Configuração da câmera</h1>
+      <p>Para melhor resultado, use o celular na <strong>horizontal</strong>. O AR.js foi projetado para vídeo em proporção 4:3.</p>
 
-    <!-- Ambiente A: marcador Hiro -->
-    <a-marker id="salaA" type="pattern" url="data/patt.hiro">
-      <a-box position="0 0.5 0" material="color: #f2c230"></a-box>
-    </a-marker>
+      <button id="btnListar" class="sec" type="button">1. Permitir câmera e listar lentes</button>
 
-    <!-- Ambiente B: marcador Kanji -->
-    <a-marker id="salaB" type="pattern" url="data/patt.kanji">
-      <a-sphere position="0 0.6 0" radius="0.6" material="color: #3aa0e0"></a-sphere>
-    </a-marker>
+      <label for="selCamera">Lente da câmera</label>
+      <select id="selCamera"><option value="">Automática (traseira)</option></select>
 
-    <a-entity camera></a-entity>
-  </a-scene>
+      <label for="selRes">Resolução (proporção 4:3)</label>
+      <select id="selRes">
+        <option value="640x480" selected>640 × 480 (padrão, mais leve)</option>
+        <option value="800x600">800 × 600</option>
+        <option value="1280x960">1280 × 960 (mais nítida, mais pesada)</option>
+      </select>
+
+      <label class="chk"><input type="checkbox" id="chkTela" checked> Tela cheia e travar em paisagem (Android)</label>
+
+      <button id="btnIniciar" type="button">2. Iniciar AR</button>
+      <p id="msgConfig" aria-live="polite"></p>
+    </div>
+  </div>
+
+  <div id="hud" aria-live="polite">
+    <div id="estado">Iniciando a câmera…</div>
+    <div id="info"></div>
+  </div>
+
+  <div id="cena"></div>
 
   <script>
-    const hud = document.getElementById('hud');
+    const $ = id => document.getElementById(id);
     const aguardando = 'Aponte a câmera para um marcador (Hiro ou Kanji).';
-    let iniciou = false;
+    let estadoBase = aguardando;
 
-    // 1) Contexto seguro (HTTPS) é obrigatório para a câmera
-    if (!window.isSecureContext) {
-      hud.textContent = 'Página fora de HTTPS: o navegador bloqueia a câmera.';
+    function estado(t) { $('estado').textContent = t; }
+
+    // ---------- Etapa 1: listar lentes ----------
+    $('btnListar').addEventListener('click', async () => {
+      const msg = $('msgConfig');
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ video: true });
+        s.getTracks().forEach(t => t.stop());              // libera a câmera para o AR.js
+        const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+        const sel = $('selCamera');
+        sel.length = 1;
+        devs.forEach((d, i) => {
+          const o = document.createElement('option');
+          o.value = d.deviceId;
+          o.textContent = d.label || ('Câmera ' + (i + 1));
+          sel.appendChild(o);
+        });
+        msg.textContent = devs.length + ' câmera(s) encontrada(s). Se a imagem sair distorcida, evite lentes "ultra wide".';
+      } catch (e) {
+        msg.textContent = 'Não foi possível acessar a câmera: ' + e.name + ' — ' + e.message;
+      }
+    });
+
+    // ---------- Etapa 2: iniciar ----------
+    $('btnIniciar').addEventListener('click', async () => {
+      if (!window.isSecureContext) {
+        $('msgConfig').textContent = 'Página fora de HTTPS: o navegador bloqueia a câmera.';
+        return;
+      }
+      // Tela cheia + paisagem precisam ser pedidas dentro do gesto do usuário
+      if ($('chkTela').checked) {
+        try {
+          await document.documentElement.requestFullscreen();
+          await screen.orientation.lock('landscape');
+        } catch (e) { /* iOS e alguns navegadores não permitem: gire o aparelho manualmente */ }
+        await new Promise(r => setTimeout(r, 500));        // aguarda a rotação terminar
+      }
+      const [w, h] = $('selRes').value.split('x').map(Number);
+      iniciarCena(w, h, $('selCamera').value);
+    });
+
+    function iniciarCena(w, h, deviceId) {
+      $('config').style.display = 'none';
+      $('hud').style.display = 'block';
+      estado('Iniciando a câmera…');
+
+      const arjs = 'sourceType: webcam; debugUIEnabled: false; cameraParametersUrl: data/camera_para.dat;' +
+                   ` sourceWidth: ${w}; sourceHeight: ${h}; displayWidth: ${w}; displayHeight: ${h};` +
+                   (deviceId ? ` deviceId: ${deviceId};` : '');
+
+      $('cena').innerHTML = `
+        <a-scene embedded vr-mode-ui="enabled: false" arjs="${arjs}">
+          <a-marker id="salaA" type="pattern" url="data/patt.hiro">
+            <a-box position="0 0.5 0" material="color: #f2c230"></a-box>
+          </a-marker>
+          <a-marker id="salaB" type="pattern" url="data/patt.kanji">
+            <a-sphere position="0 0.6 0" radius="0.6" material="color: #3aa0e0"></a-sphere>
+          </a-marker>
+          <a-entity camera></a-entity>
+        </a-scene>`;
+
+      [['salaA', 'Sala A'], ['salaB', 'Sala B']].forEach(([id, nome]) => {
+        const m = $(id);
+        m.addEventListener('markerFound', () => estado('Marcador detectado: ' + nome));
+        m.addEventListener('markerLost',  () => estado(estadoBase));
+      });
+
+      corrigirLayout();
     }
 
-    // 2) Verifica se os arquivos de dados estão acessíveis neste servidor
-    ['data/camera_para.dat', 'data/patt.hiro', 'data/patt.kanji'].forEach(url => {
-      fetch(url, { method: 'GET', cache: 'no-store' })
-        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); })
-        .catch(e => { hud.textContent = 'Arquivo não encontrado: ' + url + ' (' + e.message + '). Envie a pasta data/ ao servidor.'; });
+    // ---------- Correção de layout do vídeo ----------
+    // O AR.js calcula o tamanho do vídeo uma vez; se a câmera ainda não informou a resolução,
+    // o resultado é inválido e o vídeo aparece no tamanho original, ancorado no canto da tela.
+    // Aqui forçamos o recálculo assim que as dimensões reais estão disponíveis.
+    function corrigirLayout() {
+      let tentativas = 0, disparos = 0;
+      const t = setInterval(() => {
+        tentativas++;
+        const v = $('arjs-video');
+        if (v && v.videoWidth > 0) {
+          window.dispatchEvent(new Event('resize'));
+          if (++disparos >= 4) { clearInterval(t); estado(estadoBase); }
+        }
+        if (tentativas > 80) { clearInterval(t); estado('A câmera não iniciou. Verifique a permissão e o HTTPS.'); }
+      }, 300);
+    }
+    window.addEventListener('orientationchange', () => {
+      setTimeout(() => window.dispatchEvent(new Event('resize')), 400);
+      setTimeout(() => window.dispatchEvent(new Event('resize')), 1000);
     });
 
-    // 3) Exibe erros reais do código (ignora ruído de extensões do navegador)
+    // ---------- Diagnóstico ----------
+    setInterval(() => {
+      const v = $('arjs-video');
+      const orient = innerWidth > innerHeight ? 'paisagem' : 'retrato';
+      $('info').textContent = (v && v.videoWidth ? `Vídeo ${v.videoWidth}×${v.videoHeight}` : 'Vídeo: aguardando') +
+                              ` · Tela ${innerWidth}×${innerHeight} (${orient})`;
+    }, 1000);
+
     const ruido = /message channel closed|Extension context|chrome-extension/i;
-    window.addEventListener('error', e => {
-      if (!ruido.test(e.message || '')) hud.textContent = 'Erro: ' + e.message;
-    });
+    window.addEventListener('error', e => { if (!ruido.test(e.message || '')) estado('Erro: ' + e.message); });
     window.addEventListener('unhandledrejection', e => {
       const msg = (e.reason && (e.reason.message || e.reason)) + '';
-      if (!ruido.test(msg)) hud.textContent = 'Erro: ' + msg;
+      if (!ruido.test(msg)) estado('Erro: ' + msg);
     });
-
-    window.addEventListener('camera-init', () => { iniciou = true; hud.textContent = aguardando; });
     window.addEventListener('camera-error', e => {
-      hud.textContent = 'Erro de câmera: ' + ((e.detail && (e.detail.message || e.detail.code)) || 'verifique a permissão');
-    });
-    setTimeout(() => { if (!iniciou && hud.textContent === 'Iniciando a câmera…') hud.textContent = aguardando; }, 5000);
-
-    // 4) Eventos dos marcadores
-    [['salaA', 'Sala A'], ['salaB', 'Sala B']].forEach(([id, nome]) => {
-      const m = document.getElementById(id);
-      m.addEventListener('markerFound', () => { hud.textContent = 'Marcador detectado: ' + nome; });
-      m.addEventListener('markerLost',  () => { hud.textContent = aguardando; });
+      estado('Erro de câmera: ' + ((e.detail && (e.detail.message || e.detail.code)) || 'verifique a permissão'));
     });
   </script>
 </body>
