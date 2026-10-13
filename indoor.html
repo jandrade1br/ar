@@ -5,31 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WebAR Indoor (marcadores)</title>
   <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
-  <!-- Build do AR.js para rastreamento por marcadores -->
   <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar.js"></script>
   <style>
-    html, body { margin:0; height:100%; overflow:hidden; background:#000; font:16px system-ui, sans-serif; }
+    /* IMPORTANTE: sem background em html/body. O AR.js insere o <video> da câmera com z-index negativo;
+       um fundo opaco no body o cobriria e a tela ficaria preta. */
+    html, body { margin:0; height:100%; overflow:hidden; font:16px system-ui, sans-serif; }
     #hud { position:fixed; left:0; right:0; bottom:0; padding:10px 14px; color:#fff;
-           background:rgba(0,0,0,.6); z-index:5; font-size:14px; }
+           background:rgba(0,0,0,.65); z-index:5; font-size:14px; }
   </style>
 </head>
 <body>
-  <div id="hud" aria-live="polite">Aponte a câmera para um marcador (Hiro ou Kanji).</div>
+  <div id="hud" aria-live="polite">Iniciando a câmera…</div>
 
   <a-scene embedded vr-mode-ui="enabled: false"
-           arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono_and_matrix; matrixCodeType: 3x3;"
-           renderer="antialias: true; alpha: true">
+           arjs="sourceType: webcam; debugUIEnabled: false;"
+           renderer="logarithmicDepthBuffer: true; alpha: true">
 
-    <!-- Ambiente A: marcador Hiro -->
     <a-marker id="salaA" preset="hiro">
       <a-box position="0 0.5 0" material="color: #f2c230"></a-box>
-      <a-text value="Sala A" align="center" color="#fff" position="0 1.4 0" scale="2 2 2" rotation="-90 0 0"></a-text>
     </a-marker>
 
-    <!-- Ambiente B: marcador Kanji -->
     <a-marker id="salaB" preset="kanji">
       <a-sphere position="0 0.6 0" radius="0.6" material="color: #3aa0e0"></a-sphere>
-      <a-text value="Sala B" align="center" color="#fff" position="0 1.6 0" scale="2 2 2" rotation="-90 0 0"></a-text>
     </a-marker>
 
     <a-entity camera></a-entity>
@@ -37,10 +34,24 @@
 
   <script>
     const hud = document.getElementById('hud');
+    const aguardando = 'Aponte a câmera para um marcador (Hiro ou Kanji).';
+
+    // Diagnóstico da câmera
+    if (!window.isSecureContext) {
+      hud.textContent = 'Página fora de HTTPS: o navegador bloqueia a câmera.';
+    }
+    window.addEventListener('camera-init', () => { hud.textContent = aguardando; });
+    window.addEventListener('camera-error', e => {
+      hud.textContent = 'Erro de câmera: ' + (e.detail && (e.detail.message || e.detail.code) || 'verifique a permissão');
+    });
+    setTimeout(() => {
+      if (hud.textContent === 'Iniciando a câmera…') hud.textContent = aguardando;
+    }, 4000);
+
     [['salaA', 'Sala A'], ['salaB', 'Sala B']].forEach(([id, nome]) => {
       const m = document.getElementById(id);
       m.addEventListener('markerFound', () => { hud.textContent = 'Marcador detectado: ' + nome; });
-      m.addEventListener('markerLost',  () => { hud.textContent = 'Aponte a câmera para um marcador (Hiro ou Kanji).'; });
+      m.addEventListener('markerLost',  () => { hud.textContent = aguardando; });
     });
   </script>
 </body>
