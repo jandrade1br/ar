@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebAR Outdoor (GPS)</title>
+  <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
+  <!-- Build do AR.js com suporte à AR baseada em localização (gps-new-camera / gps-new-entity-place) -->
+  <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar-nft.js"></script>
+  <style>
+    html, body { margin:0; height:100%; overflow:hidden; background:#000; font:16px system-ui, sans-serif; }
+    #inicio { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center;
+              justify-content:center; gap:16px; padding:24px; text-align:center; color:#fff; background:#10231a; z-index:10; }
+    #inicio button { font:inherit; padding:14px 28px; border:0; border-radius:10px; background:#5fd49a; color:#06241a; }
+    #inicio button:focus-visible { outline:3px solid #fff; outline-offset:2px; }
+    #hud { position:fixed; left:0; right:0; bottom:0; padding:10px 14px; color:#fff;
+           background:rgba(0,0,0,.6); z-index:5; font-size:14px; display:none; }
+  </style>
+</head>
+<body>
+  <div id="inicio">
+    <h1 style="margin:0;font-size:1.4rem">AR outdoor por GPS</h1>
+    <p style="margin:0;max-width:28rem">
+      Vá a um local aberto. Ao tocar em Iniciar, permita câmera, localização e sensores de movimento.
+      Por padrão o objeto aparece 25 m ao norte da sua posição.
+      Para um ponto fixo, abra a página com <code>?lat=-1.3&amp;lon=-48.4</code>.
+    </p>
+    <button id="btn">Iniciar</button>
+  </div>
+  <div id="hud" aria-live="polite">Aguardando GPS…</div>
+  <div id="cena"></div>
+
+  <script>
+    const hud = document.getElementById('hud');
+    const params = new URLSearchParams(location.search);
+
+    document.getElementById('btn').addEventListener('click', async () => {
+      // iOS 13+ exige permissão explícita (e gesto do usuário) para a bússola/giroscópio
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        try { await DeviceOrientationEvent.requestPermission(); }
+        catch (e) { hud.style.display = 'block'; hud.textContent = 'Permissão de sensores negada.'; return; }
+      }
+      document.getElementById('inicio').style.display = 'none';
+      hud.style.display = 'block';
+
+      if (params.has('lat') && params.has('lon')) {
+        criarCena(parseFloat(params.get('lat')), parseFloat(params.get('lon')));
+        hud.textContent = 'Ponto fixo: ' + params.get('lat') + ', ' + params.get('lon');
+      } else {
+        navigator.geolocation.getCurrentPosition(pos => {
+          const { latitude, longitude } = pos.coords;
+          const deslocamentoNorte = 25 / 111320;   // ~25 m em graus de latitude
+          criarCena(latitude + deslocamentoNorte, longitude);
+          hud.textContent = 'Ponto criado 25 m ao norte. Precisão do GPS: ±' + Math.round(pos.coords.accuracy) + ' m';
+        }, err => {
+          hud.textContent = 'Não foi possível obter o GPS: ' + err.message;
+        }, { enableHighAccuracy: true, timeout: 20000 });
+      }
+    });
+
+    function criarCena(lat, lon) {
+      document.getElementById('cena').innerHTML = `
+        <a-scene vr-mode-ui="enabled: false"
+                 arjs="sourceType: webcam; videoTexture: true; debugUIEnabled: false"
+                 renderer="antialias: true; alpha: true">
+          <a-camera gps-new-camera="gpsMinDistance: 5"></a-camera>
+
+          <a-entity id="ponto"
+                    gps-new-entity-place="latitude: ${lat}; longitude: ${lon}"
+                    geometry="primitive: box"
+                    material="color: #e0453a"
+                    scale="6 6 6">
+          </a-entity>
+          <a-text value="Ponto A" align="center" color="#fff" scale="40 40 40"
+                  gps-new-entity-place="latitude: ${lat}; longitude: ${lon}"
+                  position="0 12 0"></a-text>
+        </a-scene>`;
+
+      // Distância até o ponto, atualizada a cada leitura do GPS
+      setTimeout(() => {
+        const ponto = document.getElementById('ponto');
+        if (ponto) ponto.addEventListener('gps-entity-place-update-position', e => {
+          hud.textContent = 'Distância até o Ponto A: ' + Math.round(e.detail.distance) + ' m';
+        });
+      }, 500);
+    }
+  </script>
+</body>
+</html>
