@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Marcadores para teste (exibir na tela)</title>
+  <style>
+    /* Fundo SEMPRE branco: a margem branca ao redor do marcador é necessária para a detecção. */
+    :root { color-scheme: light; }
+    html, body { margin: 0; height: 100%; background: #fff; color: #111; font: 16px system-ui, sans-serif; }
+    body { display: flex; flex-direction: column; }
+    #barra { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 10px 14px;
+             border-bottom: 1px solid #ccc; }
+    #barra button, #barra label { font: inherit; }
+    #barra button { padding: 8px 14px; border: 1px solid #1f6f4a; border-radius: 8px; background: #fff; color: #1f6f4a; }
+    #barra button[aria-pressed="true"] { background: #1f6f4a; color: #fff; }
+    #barra button:focus-visible, #barra input:focus-visible { outline: 3px solid #1f6f4a; outline-offset: 2px; }
+    #dica { padding: 8px 14px; font-size: .9rem; background: #f3f6f4; border-bottom: 1px solid #ccc; }
+    #palco { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #fff; }
+    #palco img { display: block; width: 70vmin; height: 70vmin; image-rendering: auto; }
+  </style>
+</head>
+<body>
+  <div id="barra">
+    <span>
+      <button id="bHiro"  type="button" aria-pressed="true">Hiro (Sala A)</button>
+      <button id="bKanji" type="button" aria-pressed="false">Kanji (Sala B)</button>
+    </span>
+    <label>Tamanho
+      <input id="tam" type="range" min="30" max="100" value="70" aria-label="Tamanho do marcador">
+    </label>
+    <button id="bTela" type="button">Tela cheia</button>
+  </div>
+  <div id="dica">
+    Brilho da tela no máximo, sem reflexos. Posicione o celular a 25–40 cm, de frente para o marcador,
+    de modo que ele ocupe pelo menos 1/3 da imagem da câmera.
+  </div>
+  <div id="palco"><img id="img" src="data/hiro.png" alt="Marcador Hiro"></div>
+
+  <script>
+    const img = document.getElementById('img');
+    const bH = document.getElementById('bHiro'), bK = document.getElementById('bKanji');
+    function escolher(nome) {
+      img.src = 'data/' + nome + '.png';
+      img.alt = 'Marcador ' + (nome === 'hiro' ? 'Hiro' : 'Kanji');
+      bH.setAttribute('aria-pressed', nome === 'hiro');
+      bK.setAttribute('aria-pressed', nome === 'kanji');
+    }
+    bH.addEventListener('click', () => escolher('hiro'));
+    bK.addEventListener('click', () => escolher('kanji'));
+    document.getElementById('tam').addEventListener('input', e => {
+      img.style.width = img.style.height = e.target.value + 'vmin';
+    });
+    document.getElementById('bTela').addEventListener('click', () => {
+      document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
+    });
+  </script>
+</body>
+</html>
