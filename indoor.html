@@ -50,6 +50,7 @@
       </select>
 
       <label class="chk"><input type="checkbox" id="chkTela" checked> Tela cheia e travar em paisagem (Android)</label>
+      <label class="chk"><input type="checkbox" id="chkDebug"> Modo depuração (mostra o que o detector enxerga)</label>
 
       <button id="btnIniciar" type="button">2. Iniciar AR</button>
       <p id="msgConfig" aria-live="polite"></p>
@@ -106,17 +107,18 @@
         await new Promise(r => setTimeout(r, 500));        // aguarda a rotação terminar
       }
       const [w, h] = $('selRes').value.split('x').map(Number);
-      iniciarCena(w, h, $('selCamera').value);
+      iniciarCena(w, h, $('selCamera').value, $('chkDebug').checked);
     });
 
-    function iniciarCena(w, h, deviceId) {
+    function iniciarCena(w, h, deviceId, depurar) {
       $('config').style.display = 'none';
       $('hud').style.display = 'block';
       estado('Iniciando a câmera…');
 
       const arjs = 'sourceType: webcam; debugUIEnabled: false; cameraParametersUrl: data/camera_para.dat;' +
                    ` sourceWidth: ${w}; sourceHeight: ${h}; displayWidth: ${w}; displayHeight: ${h};` +
-                   (deviceId ? ` deviceId: ${deviceId};` : '');
+                   (deviceId ? ` deviceId: ${deviceId};` : '') +
+                   (depurar ? ' debug: true;' : '');
 
       $('cena').innerHTML = `
         <a-scene embedded vr-mode-ui="enabled: false" arjs="${arjs}">
