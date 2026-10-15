@@ -67,6 +67,7 @@
   <div id="hud" aria-live="polite">
     <div id="estado">Aguardando…</div>
     <div id="det" class="peq"></div>
+    <div id="err" class="peq"></div>
   </div>
 
   <script>
@@ -77,6 +78,17 @@
     let pos = null;             // última posição do GPS
     let alvo = null;            // {lat, lon} do objeto
     let cameraOk = false, gpsAR = false, entidades = 0;
+    let precMinNum = 0;
+
+    function registrarErro(m) {
+      m = String(m || '');
+      if (/message channel closed|Extension context|chrome-extension/i.test(m)) return;
+      $('err').textContent = 'Último erro: ' + m.slice(0, 160);
+    }
+    window.addEventListener('error', e => registrarErro(e.message));
+    window.addEventListener('unhandledrejection', e => registrarErro(e.reason && e.reason.message || e.reason));
+    const consoleErroOriginal = console.error;
+    console.error = (...args) => { registrarErro(args.join(' ')); consoleErroOriginal.apply(console, args); };
 
     function estado(t) { $('estado').textContent = t; }
 
@@ -163,47 +175,67 @@
     });
 
     function criarCena(precMin, teste) {
+      precMinNum = Number(precMin);
+      // Primeiro só a câmera GPS. O AR.js exige que ela esteja inicializada antes dos objetos,
+      // e ela não pode ter elementos filhos durante a inicialização.
       document.body.insertAdjacentHTML('beforeend', `
         <a-scene vr-mode-ui="enabled: false"
                  arjs="sourceType: webcam; videoTexture: true; debugUIEnabled: false"
                  renderer="antialias: true; alpha: true">
-
-          <a-camera gps-new-camera="gpsMinDistance: 5; positionMinAccuracy: ${precMin}">
-            ${teste ? '<a-box position="0 -0.3 -2" scale="0.3 0.3 0.3" material="color: #3ae05f"></a-box>' : ''}
-          </a-camera>
-
-          <a-entity id="ponto" geometry="primitive: box" material="color: #e0453a" scale="6 6 6"
-                    gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}"></a-entity>
-          <a-text value="Ponto A" align="center" color="#ffffff" width="30" look-at="[gps-new-camera]"
-                  gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}" position="0 7 0"></a-text>
+          <a-camera gps-new-camera="gpsMinDistance: 5; positionMinAccuracy: ${precMin}"></a-camera>
         </a-scene>`);
 
       const cena = document.querySelector('a-scene');
-      cena.addEventListener('gps-entity-place-added', () => { entidades++; });
-      cena.addEventListener('gps-camera-update-position', () => { gpsAR = true; });
-      window.addEventListener('arjs-video-loaded', () => { cameraOk = true; });
+      const montar = () => {
+        const camera = document.querySelector('a-camera');
+        cena.insertAdjacentHTML('beforeend', `
+          <a-entity id="ponto" geometry="primitive: box" material="color: #e0453a" scale="6 6 6"
+                    gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}"></a-entity>
+          <a-text value="Ponto A" align="center" color="#ffffff" width="30" look-at="[gps-new-camera]"
+                  gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}" position="0 7 0"></a-text>`);
+        if (teste) {
+          camera.insertAdjacentHTML('beforeend',
+            '<a-box position="0 -0.3 -2" scale="0.3 0.3 0.3" material="color: #3ae05f"></a-box>');
+        }
+      };
+      if (cena.hasLoaded) montar(); else cena.addEventListener('loaded', montar, { once: true });
     }
 
     // ---------- Painel de diagnóstico ----------
+    function f(n) { return (Math.round(n * 10) / 10).toString(); }
+
     function atualizarPainel() {
       if (!pos || !alvo) return;
+
+      // Estado real dos componentes (não depende de eventos)
+      const v = document.querySelector('video');
+      cameraOk = !!(v && v.readyState >= 2);
+      const cam = document.querySelector('[gps-new-camera]');
+      const comp = cam && cam.components && cam.components['gps-new-camera'];
+      gpsAR = !!(comp && comp._currentPosition);
+      entidades = [...document.querySelectorAll('[gps-new-entity-place]')]
+                    .filter(el => el.components && el.components['gps-new-entity-place']).length;
+      const ponto = document.getElementById('ponto');
+
       const d = distancia(pos, alvo), r = rumoPara(pos, alvo);
-      let rel = null, orient = 'bússola indisponível';
+      let orient = 'bússola indisponível';
       if (rumoAtual !== null) {
-        rel = ((r - rumoAtual + 540) % 360) - 180;       // -180..180 (positivo = à direita)
+        const rel = ((r - rumoAtual + 540) % 360) - 180;       // -180..180 (positivo = à direita)
         orient = Math.abs(rel) < 10 ? 'objeto à frente'
                : 'vire ' + Math.round(Math.abs(rel)) + '° para a ' + (rel > 0 ? 'direita' : 'esquerda');
       }
-      estado('Objeto a ' + Math.round(d) + ' m · ' + orient);
+      let msg = 'Objeto a ' + Math.round(d) + ' m · ' + orient;
+      if (cam && !gpsAR && pos.prec > precMinNum) msg = 'Precisão do GPS (±' + Math.round(pos.prec) + ' m) pior que o limite escolhido. ' + msg;
+      estado(msg);
+
+      let mundo = '';
+      if (cam && comp) mundo += ` · Câmera (x,z): ${f(cam.object3D.position.x)}, ${f(cam.object3D.position.z)}`;
+      if (ponto) mundo += ` · Objeto (x,z): ${f(ponto.object3D.position.x)}, ${f(ponto.object3D.position.z)}`;
       $('det').textContent =
         `GPS ±${Math.round(pos.prec)} m · Rumo da câmera ${rumoAtual === null ? '—' : Math.round(rumoAtual) + '°'}` +
         ` · Câmera: ${cameraOk ? 'ok' : 'aguardando'} · Posição no AR.js: ${gpsAR ? 'ok' : 'aguardando'}` +
-        ` · Objetos: ${entidades}`;
+        ` · Objetos: ${entidades}/2` + mundo;
     }
-
-    window.addEventListener('error', e => {
-      if (!/message channel closed|Extension context|chrome-extension/i.test(e.message || '')) estado('Erro: ' + e.message);
-    });
   </script>
 </body>
 </html>
