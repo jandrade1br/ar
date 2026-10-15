@@ -62,7 +62,6 @@
     <div id="info"></div>
   </div>
 
-  <div id="cena"></div>
 
   <script>
     const $ = id => document.getElementById(id);
@@ -120,7 +119,7 @@
                    (deviceId ? ` deviceId: ${deviceId};` : '') +
                    (depurar ? ' debug: true;' : '');
 
-      $('cena').innerHTML = `
+      document.body.insertAdjacentHTML('beforeend', `
         <a-scene embedded vr-mode-ui="enabled: false" arjs="${arjs}">
           <a-marker id="salaA" type="pattern" url="data/patt.hiro">
             <a-box position="0 0.5 0" material="color: #f2c230"></a-box>
@@ -129,7 +128,7 @@
             <a-sphere position="0 0.6 0" radius="0.6" material="color: #3aa0e0"></a-sphere>
           </a-marker>
           <a-entity camera></a-entity>
-        </a-scene>`;
+        </a-scene>`);
 
       [['salaA', 'Sala A'], ['salaB', 'Sala B']].forEach(([id, nome]) => {
         const m = $(id);
@@ -165,8 +164,10 @@
     setInterval(() => {
       const v = $('arjs-video');
       const orient = innerWidth > innerHeight ? 'paisagem' : 'retrato';
+      const c = document.querySelector('canvas.a-canvas');
       $('info').textContent = (v && v.videoWidth ? `Vídeo ${v.videoWidth}×${v.videoHeight}` : 'Vídeo: aguardando') +
-                              ` · Tela ${innerWidth}×${innerHeight} (${orient})`;
+                              ` · Tela ${innerWidth}×${innerHeight} (${orient})` +
+                              (c ? ` · Canvas 3D ${c.width}×${c.height}` : ' · Canvas 3D: ausente');
     }, 1000);
 
     const ruido = /message channel closed|Extension context|chrome-extension/i;
