@@ -4,87 +4,206 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WebAR Outdoor (GPS)</title>
-  <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
-  <!-- Build do AR.js com suporte à AR baseada em localização (gps-new-camera / gps-new-entity-place) -->
-  <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar-nft.js"></script>
+
+  <!-- Bibliotecas hospedadas localmente (pasta lib/) -->
+  <script src="lib/aframe.min.js"></script>
+  <script src="lib/aframe-ar-nft.js"></script>
+
   <style>
-    html, body { margin:0; height:100%; overflow:hidden; background:#000; font:16px system-ui, sans-serif; }
-    #inicio { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center;
-              justify-content:center; gap:16px; padding:24px; text-align:center; color:#fff; background:#10231a; z-index:10; }
-    #inicio button { font:inherit; padding:14px 28px; border:0; border-radius:10px; background:#5fd49a; color:#06241a; }
-    #inicio button:focus-visible { outline:3px solid #fff; outline-offset:2px; }
-    #hud { position:fixed; left:0; right:0; bottom:0; padding:10px 14px; color:#fff;
-           background:rgba(0,0,0,.6); z-index:5; font-size:14px; display:none; }
+    html, body { margin: 0; height: 100%; overflow: hidden; font: 16px system-ui, sans-serif; }
+    #inicio { position: fixed; inset: 0; z-index: 10000; overflow-y: auto; padding: 20px;
+              background: #10231a; color: #fff; }
+    #inicio .caixa { max-width: 30rem; margin: 0 auto; }
+    #inicio h1 { font-size: 1.3rem; margin: 0 0 8px; }
+    #inicio p, #inicio label { font-size: .95rem; }
+    #inicio label { display: block; margin: 14px 0 4px; font-weight: 600; }
+    #inicio select, #inicio button { font: inherit; width: 100%; padding: 12px; border-radius: 10px; border: 0; }
+    #inicio select { background: #fff; color: #111; }
+    #inicio button { background: #5fd49a; color: #06241a; margin-top: 16px; }
+    #inicio .chk { display: flex; gap: 10px; align-items: center; font-weight: 400; }
+    #inicio .chk input { width: 20px; height: 20px; }
+    #inicio button:focus-visible, #inicio select:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+    #hud { position: fixed; left: 0; right: 0; bottom: 0; padding: 8px 14px; color: #fff; display: none;
+           background: rgba(0,0,0,.7); z-index: 9999; font-size: 14px; line-height: 1.4; }
+    #hud .peq { opacity: .8; font-size: 12px; }
   </style>
 </head>
 <body>
+
   <div id="inicio">
-    <h1 style="margin:0;font-size:1.4rem">AR outdoor por GPS</h1>
-    <p style="margin:0;max-width:28rem">
-      Vá a um local aberto. Ao tocar em Iniciar, permita câmera, localização e sensores de movimento.
-      Por padrão o objeto aparece 25 m ao norte da sua posição.
-      Para um ponto fixo, abra a página com <code>?lat=-1.3&amp;lon=-48.4</code>.
-    </p>
-    <button id="btn">Iniciar</button>
+    <div class="caixa">
+      <h1>AR outdoor por GPS</h1>
+      <p>Use em local aberto. Ao iniciar, permita câmera, localização e sensores de movimento.</p>
+
+      <label for="selModo">Onde colocar o objeto</label>
+      <select id="selModo">
+        <option value="frente" selected>À frente de mim (direção em que o celular aponta ao iniciar)</option>
+        <option value="norte">Ao norte da minha posição</option>
+      </select>
+
+      <label for="selDist">Distância do objeto</label>
+      <select id="selDist">
+        <option value="10">10 m</option>
+        <option value="15" selected>15 m</option>
+        <option value="25">25 m</option>
+        <option value="50">50 m</option>
+      </select>
+
+      <label for="selPrec">Precisão mínima do GPS aceita</label>
+      <select id="selPrec">
+        <option value="1000" selected>Até 1000 m (teste em local fechado ou sinal fraco)</option>
+        <option value="100">Até 100 m (padrão do AR.js)</option>
+        <option value="30">Até 30 m (campo aberto)</option>
+      </select>
+
+      <label class="chk"><input type="checkbox" id="chkTeste" checked>
+        Mostrar um cubo verde fixo na frente da câmera (verifica se o desenho 3D funciona)</label>
+
+      <p class="peq">Para um ponto fixo, abra a página com <code>?lat=-1.3&amp;lon=-48.4</code>.</p>
+      <button id="btn" type="button">Iniciar</button>
+    </div>
   </div>
-  <div id="hud" aria-live="polite">Aguardando GPS…</div>
-  <div id="cena"></div>
+
+  <div id="hud" aria-live="polite">
+    <div id="estado">Aguardando…</div>
+    <div id="det" class="peq"></div>
+  </div>
 
   <script>
-    const hud = document.getElementById('hud');
+    const $ = id => document.getElementById(id);
     const params = new URLSearchParams(location.search);
+    const RAD = Math.PI / 180;
+    let rumoAtual = null;       // direção em que a câmera traseira aponta (graus, 0 = norte)
+    let pos = null;             // última posição do GPS
+    let alvo = null;            // {lat, lon} do objeto
+    let cameraOk = false, gpsAR = false, entidades = 0;
 
-    document.getElementById('btn').addEventListener('click', async () => {
-      // iOS 13+ exige permissão explícita (e gesto do usuário) para a bússola/giroscópio
+    function estado(t) { $('estado').textContent = t; }
+
+    // ---------- Geometria ----------
+    function distancia(a, b) {                       // haversine, em metros
+      const R = 6371000, dLat = (b.lat - a.lat) * RAD, dLon = (b.lon - a.lon) * RAD;
+      const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * RAD) * Math.cos(b.lat * RAD) * Math.sin(dLon / 2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(x));
+    }
+    function rumoPara(a, b) {                        // azimute de a até b, em graus
+      const y = Math.sin((b.lon - a.lon) * RAD) * Math.cos(b.lat * RAD);
+      const x = Math.cos(a.lat * RAD) * Math.sin(b.lat * RAD) -
+                Math.sin(a.lat * RAD) * Math.cos(b.lat * RAD) * Math.cos((b.lon - a.lon) * RAD);
+      return (Math.atan2(y, x) / RAD + 360) % 360;
+    }
+    function deslocar(p, metros, graus) {            // ponto a "metros" de p, na direção "graus"
+      return {
+        lat: p.lat + (metros * Math.cos(graus * RAD)) / 111320,
+        lon: p.lon + (metros * Math.sin(graus * RAD)) / (111320 * Math.cos(p.lat * RAD))
+      };
+    }
+
+    // ---------- Bússola (direção da câmera traseira) ----------
+    function rumoDaCamera(alpha, beta, gamma) {      // fórmula do W3C (DeviceOrientation)
+      const x = (beta || 0) * RAD, y = (gamma || 0) * RAD, z = (alpha || 0) * RAD;
+      const cY = Math.cos(y), cZ = Math.cos(z), sX = Math.sin(x), sY = Math.sin(y), sZ = Math.sin(z);
+      const Vx = -cZ * sY - sZ * sX * cY, Vy = -sZ * sY + cZ * sX * cY;
+      let h = Math.atan(Vx / Vy);
+      if (Vy < 0) h += Math.PI; else if (Vx < 0) h += 2 * Math.PI;
+      return h / RAD;
+    }
+    const eventoOri = 'ondeviceorientationabsolute' in window ? 'deviceorientationabsolute' : 'deviceorientation';
+    function aoOrientar(e) {
+      if (e.webkitCompassHeading !== undefined) rumoAtual = e.webkitCompassHeading;
+      else if (e.alpha != null && (e.absolute === true || e.absolute === undefined)) {
+        const g = rumoDaCamera(e.alpha, e.beta, e.gamma);   // indefinido com o celular deitado
+        if (Number.isFinite(g)) rumoAtual = g;
+      }
+    }
+
+    // ---------- GPS ----------
+    function obterPosicao() {
+      return new Promise((ok, erro) => navigator.geolocation.getCurrentPosition(
+        p => ok({ lat: p.coords.latitude, lon: p.coords.longitude, prec: p.coords.accuracy }),
+        erro, { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }));
+    }
+
+    // ---------- Início ----------
+    $('btn').addEventListener('click', async () => {
+      // iOS 13+ exige permissão explícita para a bússola, dentro do gesto do usuário
       if (typeof DeviceOrientationEvent !== 'undefined' &&
           typeof DeviceOrientationEvent.requestPermission === 'function') {
-        try { await DeviceOrientationEvent.requestPermission(); }
-        catch (e) { hud.style.display = 'block'; hud.textContent = 'Permissão de sensores negada.'; return; }
+        try { await DeviceOrientationEvent.requestPermission(); } catch (e) { /* segue sem bússola */ }
       }
-      document.getElementById('inicio').style.display = 'none';
-      hud.style.display = 'block';
+      window.addEventListener(eventoOri, aoOrientar, true);
+      $('inicio').style.display = 'none';
+      $('hud').style.display = 'block';
+      estado('Obtendo GPS e bússola…');
 
+      try { pos = await obterPosicao(); }
+      catch (e) { estado('GPS indisponível: ' + e.message + '. Ative a localização e use HTTPS.'); return; }
+      navigator.geolocation.watchPosition(
+        p => { pos = { lat: p.coords.latitude, lon: p.coords.longitude, prec: p.coords.accuracy }; },
+        () => {}, { enableHighAccuracy: true });
+
+      for (let i = 0; i < 10 && rumoAtual === null; i++) await new Promise(r => setTimeout(r, 200));
+
+      const dist = Number($('selDist').value);
+      let aviso = '';
       if (params.has('lat') && params.has('lon')) {
-        criarCena(parseFloat(params.get('lat')), parseFloat(params.get('lon')));
-        hud.textContent = 'Ponto fixo: ' + params.get('lat') + ', ' + params.get('lon');
+        alvo = { lat: parseFloat(params.get('lat')), lon: parseFloat(params.get('lon')) };
+        aviso = 'Ponto fixo definido pela URL.';
       } else {
-        navigator.geolocation.getCurrentPosition(pos => {
-          const { latitude, longitude } = pos.coords;
-          const deslocamentoNorte = 25 / 111320;   // ~25 m em graus de latitude
-          criarCena(latitude + deslocamentoNorte, longitude);
-          hud.textContent = 'Ponto criado 25 m ao norte. Precisão do GPS: ±' + Math.round(pos.coords.accuracy) + ' m';
-        }, err => {
-          hud.textContent = 'Não foi possível obter o GPS: ' + err.message;
-        }, { enableHighAccuracy: true, timeout: 20000 });
+        let graus = 0;
+        if ($('selModo').value === 'frente') {
+          if (rumoAtual !== null) graus = rumoAtual;
+          else aviso = 'Bússola indisponível: objeto colocado ao norte. ';
+        }
+        alvo = deslocar(pos, dist, graus);
       }
+      criarCena($('selPrec').value, $('chkTeste').checked);
+      estado(aviso + 'Câmera iniciando…');
+      setInterval(atualizarPainel, 500);
     });
 
-    function criarCena(lat, lon) {
-      document.getElementById('cena').innerHTML = `
+    function criarCena(precMin, teste) {
+      document.body.insertAdjacentHTML('beforeend', `
         <a-scene vr-mode-ui="enabled: false"
                  arjs="sourceType: webcam; videoTexture: true; debugUIEnabled: false"
                  renderer="antialias: true; alpha: true">
-          <a-camera gps-new-camera="gpsMinDistance: 5"></a-camera>
 
-          <a-entity id="ponto"
-                    gps-new-entity-place="latitude: ${lat}; longitude: ${lon}"
-                    geometry="primitive: box"
-                    material="color: #e0453a"
-                    scale="6 6 6">
-          </a-entity>
-          <a-text value="Ponto A" align="center" color="#fff" scale="40 40 40"
-                  gps-new-entity-place="latitude: ${lat}; longitude: ${lon}"
-                  position="0 12 0"></a-text>
-        </a-scene>`;
+          <a-camera gps-new-camera="gpsMinDistance: 5; positionMinAccuracy: ${precMin}">
+            ${teste ? '<a-box position="0 -0.3 -2" scale="0.3 0.3 0.3" material="color: #3ae05f"></a-box>' : ''}
+          </a-camera>
 
-      // Distância até o ponto, atualizada a cada leitura do GPS
-      setTimeout(() => {
-        const ponto = document.getElementById('ponto');
-        if (ponto) ponto.addEventListener('gps-entity-place-update-position', e => {
-          hud.textContent = 'Distância até o Ponto A: ' + Math.round(e.detail.distance) + ' m';
-        });
-      }, 500);
+          <a-entity id="ponto" geometry="primitive: box" material="color: #e0453a" scale="6 6 6"
+                    gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}"></a-entity>
+          <a-text value="Ponto A" align="center" color="#ffffff" width="30" look-at="[gps-new-camera]"
+                  gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}" position="0 7 0"></a-text>
+        </a-scene>`);
+
+      const cena = document.querySelector('a-scene');
+      cena.addEventListener('gps-entity-place-added', () => { entidades++; });
+      cena.addEventListener('gps-camera-update-position', () => { gpsAR = true; });
+      window.addEventListener('arjs-video-loaded', () => { cameraOk = true; });
     }
+
+    // ---------- Painel de diagnóstico ----------
+    function atualizarPainel() {
+      if (!pos || !alvo) return;
+      const d = distancia(pos, alvo), r = rumoPara(pos, alvo);
+      let rel = null, orient = 'bússola indisponível';
+      if (rumoAtual !== null) {
+        rel = ((r - rumoAtual + 540) % 360) - 180;       // -180..180 (positivo = à direita)
+        orient = Math.abs(rel) < 10 ? 'objeto à frente'
+               : 'vire ' + Math.round(Math.abs(rel)) + '° para a ' + (rel > 0 ? 'direita' : 'esquerda');
+      }
+      estado('Objeto a ' + Math.round(d) + ' m · ' + orient);
+      $('det').textContent =
+        `GPS ±${Math.round(pos.prec)} m · Rumo da câmera ${rumoAtual === null ? '—' : Math.round(rumoAtual) + '°'}` +
+        ` · Câmera: ${cameraOk ? 'ok' : 'aguardando'} · Posição no AR.js: ${gpsAR ? 'ok' : 'aguardando'}` +
+        ` · Objetos: ${entidades}`;
+    }
+
+    window.addEventListener('error', e => {
+      if (!/message channel closed|Extension context|chrome-extension/i.test(e.message || '')) estado('Erro: ' + e.message);
+    });
   </script>
 </body>
 </html>
