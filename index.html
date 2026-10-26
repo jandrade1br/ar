@@ -3,34 +3,63 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Protótipo WebAR</title>
+  <title>WebAR por localização</title>
   <style>
-    :root { color-scheme: light dark; --fundo:#f5f7f4; --texto:#16231b; --destaque:#1f6f4a; --borda:#c9d3cc; }
-    @media (prefers-color-scheme: dark) { :root { --fundo:#121a15; --texto:#e6efe9; --destaque:#5fd49a; --borda:#2c3a31; } }
+    :root { color-scheme: light dark; --fundo:#f5f7f4; --texto:#16231b; --destaque:#1f6f4a; --borda:#c9d3cc; --suave:#e7ede9; }
+    @media (prefers-color-scheme: dark) { :root { --fundo:#121a15; --texto:#e6efe9; --destaque:#5fd49a; --borda:#2c3a31; --suave:#1b2a21; } }
     * { box-sizing: border-box; }
-    body { margin:0; padding:24px 20px; background:var(--fundo); color:var(--texto);
-           font:16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; max-width:36rem; margin-inline:auto; }
-    h1 { font-size:1.5rem; margin:0 0 .25rem; }
-    p  { margin:.25rem 0 1.25rem; }
-    a.modo { display:block; padding:16px; margin-bottom:12px; border:1px solid var(--borda);
-             border-radius:10px; color:inherit; text-decoration:none; }
-    a.modo strong { display:block; color:var(--destaque); font-size:1.1rem; }
-    a.modo:focus-visible, a.modo:hover { border-color:var(--destaque); outline:none; }
-    small { opacity:.75; }
+    body { margin: 0 auto; padding: 24px 20px; background: var(--fundo); color: var(--texto);
+           font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 36rem; }
+    h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+    p { margin: .25rem 0 1.25rem; }
+    a.modo { display: block; padding: 16px; margin-bottom: 12px; border: 1px solid var(--borda);
+             border-radius: 10px; color: inherit; text-decoration: none; }
+    a.modo strong { display: block; color: var(--destaque); font-size: 1.1rem; }
+    a.modo span { font-size: .9rem; opacity: .85; }
+    a.modo:hover, a.modo:focus-visible { border-color: var(--destaque); outline: none; }
+    a.modo.sec { border-style: dashed; }
+    #estado { padding: 10px 12px; border-radius: 10px; background: var(--suave); font-size: .9rem; margin-bottom: 16px; }
+    small { opacity: .75; }
   </style>
 </head>
 <body>
-  <h1>Protótipo WebAR</h1>
-  <p>Escolha o modo de teste. A página precisa estar em HTTPS para o navegador liberar câmera e GPS.</p>
+  <h1>WebAR por localização</h1>
+  <p>Escolha o ambiente. Cada modo usa a tecnologia mais adequada ao local.</p>
+
+  <div id="estado" aria-live="polite">Verificando recursos do aparelho…</div>
 
   <a class="modo" href="outdoor.html">
-    <strong>Outdoor (GPS)</strong>
-    Objeto 3D ancorado em coordenadas geográficas.
+    <strong>Outdoor · AR.js + geolocalização</strong>
+    <span>Objetos 3D ancorados em coordenadas GPS, com bússola. Para ambientes abertos.</span>
   </a>
-  <a class="modo" href="indoor.html">
-    <strong>Indoor (marcadores)</strong>
-    Objeto 3D ancorado em marcadores impressos ou exibidos em outra tela.
+  <a class="modo" href="indoor-xr.html">
+    <strong>Indoor · WebXR Device API</strong>
+    <span>Rastreamento de movimento e detecção de superfícies (ARCore). Sem GPS e sem marcadores. Android com Chrome ou Samsung Internet.</span>
   </a>
-  <small>AR.js 3.4.5 + A-Frame 1.3.0</small>
+  <a class="modo sec" href="indoor.html">
+    <strong>Indoor alternativo · marcadores (AR.js)</strong>
+    <span>Funciona em aparelhos sem WebXR, como iPhone. Requer marcadores impressos ou exibidos em tela.</span>
+  </a>
+  <a class="modo sec" href="marcadores.html">
+    <strong>Marcadores para teste</strong>
+    <span>Exibe os marcadores Hiro e Kanji em tela cheia.</span>
+  </a>
+
+  <small>AR.js 3.4.5 · A-Frame 1.3.0 · three.js r160</small>
+
+  <script>
+    (async () => {
+      const partes = [];
+      partes.push(window.isSecureContext ? 'HTTPS: ok' : 'HTTPS: ausente (câmera, GPS e WebXR serão bloqueados)');
+      partes.push('GPS: ' + ('geolocation' in navigator ? 'disponível' : 'indisponível'));
+      let xr = 'indisponível';
+      if (navigator.xr && navigator.xr.isSessionSupported) {
+        try { xr = (await navigator.xr.isSessionSupported('immersive-ar')) ? 'AR disponível' : 'sem suporte a AR'; }
+        catch (e) { xr = 'erro na verificação'; }
+      }
+      partes.push('WebXR: ' + xr);
+      document.getElementById('estado').textContent = partes.join(' · ');
+    })();
+  </script>
 </body>
 </html>

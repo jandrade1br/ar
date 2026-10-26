@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebAR Indoor (WebXR)</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; background: #10231a; color: #fff; font: 16px system-ui, sans-serif; }
+    canvas { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
+
+    #inicio { max-width: 34rem; margin: 0 auto; padding: 20px; }
+    #inicio h1 { font-size: 1.3rem; margin: 0 0 8px; }
+    #inicio p, #inicio li { font-size: .95rem; line-height: 1.45; }
+    button { font: inherit; padding: 12px 18px; border: 0; border-radius: 10px; background: #5fd49a; color: #06241a; }
+    button:disabled { opacity: .5; }
+    button.sec { background: transparent; color: #5fd49a; border: 1px solid #5fd49a; }
+    button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+    a { color: #5fd49a; }
+    #suporte { padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,.08); margin: 14px 0; }
+    #saida { display: none; margin-top: 18px; }
+    #saida textarea { width: 100%; box-sizing: border-box; height: 9rem; font: 12px ui-monospace, monospace;
+                      background: #0b1710; color: #cfe; border: 1px solid #2c3a31; border-radius: 8px; padding: 8px; }
+
+    /* Camada de interface exibida DENTRO da sessão de AR (DOM overlay) */
+    #overlay { display: none; position: absolute; inset: 0; pointer-events: none; }
+    #overlay > * { pointer-events: auto; }
+    #topo { position: absolute; top: 0; left: 0; right: 0; padding: 10px 14px; background: rgba(0,0,0,.6);
+            font-size: 14px; line-height: 1.4; }
+    #botoes { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 10px; padding: 12px;
+              justify-content: center; background: rgba(0,0,0,.45); }
+    #botoes button { flex: 1; max-width: 10rem; }
+    #botoes button[aria-pressed="false"] { background: transparent; color: #5fd49a; border: 1px solid #5fd49a; }
+  </style>
+</head>
+<body>
+
+  <div id="inicio">
+    <h1>AR indoor com WebXR</h1>
+    <p>Usa o rastreamento de movimento do celular (ARCore) e a detecção de superfícies. Não depende de GPS nem de marcadores.</p>
+    <ul>
+      <li>Os <strong>pontos fixos</strong> aparecem em coordenadas fixas, medidas em metros a partir do ponto e da direção em que a sessão é iniciada.</li>
+      <li>Aponte para o chão, aguarde o anel branco e <strong>toque na tela</strong> para colocar um novo ponto.</li>
+      <li>Para resultados repetíveis, inicie sempre do mesmo lugar (por exemplo, a porta de entrada) e olhando na mesma direção.</li>
+    </ul>
+
+    <div id="suporte" aria-live="polite">Verificando suporte a WebXR…</div>
+    <button id="bIniciar" type="button" disabled>Iniciar AR</button>
+    <a href="index.html" style="margin-left:12px">Menu</a>
+
+    <div id="saida">
+      <p>Pontos colocados na última sessão (metros, relativos ao ponto inicial). Para torná-los fixos, copie para a lista <code>PONTOS_FIXOS</code> no código.</p>
+      <textarea id="json" readonly aria-label="Pontos colocados em formato JSON"></textarea>
+      <button id="bCopiar" class="sec" type="button" style="margin-top:8px">Copiar</button>
+    </div>
+  </div>
+
+  <div id="overlay">
+    <div id="topo"><span id="estadoXR">Procurando superfícies…</span></div>
+    <div id="botoes">
+      <button id="bDesfazer" type="button">Desfazer</button>
+      <button id="bFixos" type="button" aria-pressed="true">Pontos fixos</button>
+      <button id="bSair" type="button">Sair</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from './lib/three.module.min.js';
+
+    // ================== CONFIGURAÇÃO ==================
+    // Pontos fixos do ambiente. x = direita(+)/esquerda(−), z = atrás(+)/à frente(−), em metros,
+    // relativos à posição e à direção do celular no instante em que a sessão de AR começa.
+    const PONTOS_FIXOS = [
+      { nome: 'Entrada', x:  0, z: -1.5, cor: 0x3aa0e0 },
+      { nome: 'Sala A',  x:  2, z: -3.0, cor: 0xf2c230 },
+      { nome: 'Sala B',  x: -2, z: -3.0, cor: 0xe0453a },
+    ];
+    const ALTURA_OLHOS = 1.4;   // usada só se o aparelho não fornecer o piso ('local-floor')
+    const CORES = [0x3aa0e0, 0xf2c230, 0xe0453a, 0x5fd49a, 0xb06cf0];
+    // ==================================================
+
+    const $ = id => document.getElementById(id);
+    let sessao = null, hitSource = null, tipoRef = 'local-floor';
+    const colocados = [];       // {nome, grupo}
+    let quadros = 0;
+
+    // ---------- Cena ----------
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.3));
+    const luz = new THREE.DirectionalLight(0xffffff, 0.8);
+    luz.position.set(1, 3, 2);
+    scene.add(luz);
+
+    const reticulo = new THREE.Mesh(
+      new THREE.RingGeometry(0.12, 0.15, 32).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    reticulo.matrixAutoUpdate = false;
+    reticulo.visible = false;
+    scene.add(reticulo);
+
+    const fixos = new THREE.Group();
+    scene.add(fixos);
+
+    function rotulo(texto) {
+      const c = document.createElement('canvas');
+      c.width = 512; c.height = 128;
+      const g = c.getContext('2d');
+      g.fillStyle = 'rgba(0,0,0,0.65)';
+      g.beginPath();
+      if (g.roundRect) g.roundRect(0, 0, 512, 128, 24); else g.rect(0, 0, 512, 128);
+      g.fill();
+      g.fillStyle = '#ffffff';
+      g.font = 'bold 60px system-ui, sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(texto, 256, 66);
+      const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false }));
+      s.scale.set(0.6, 0.15, 1);
+      s.renderOrder = 10;
+      return s;
+    }
+
+    function criarMarcador(nome, cor) {
+      const mat = new THREE.MeshStandardMaterial({ color: cor });
+      const grupo = new THREE.Group();
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.02, 32), mat);
+      base.position.y = 0.01;
+      const haste = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1, 12), mat);
+      haste.position.y = 0.5;
+      const topo = new THREE.Mesh(new THREE.SphereGeometry(0.1, 24, 16), mat);
+      topo.position.y = 1.05;
+      const r = rotulo(nome);
+      r.position.y = 1.35;
+      grupo.add(base, haste, topo, r);
+      return grupo;
+    }
+
+    function montarFixos() {
+      fixos.clear();
+      const y = tipoRef === 'local-floor' ? 0 : -ALTURA_OLHOS;
+      PONTOS_FIXOS.forEach(p => {
+        const m = criarMarcador(p.nome, p.cor);
+        m.position.set(p.x, y, p.z);
+        fixos.add(m);
+      });
+    }
+
+    // ---------- Suporte ----------
+    async function verificarSuporte() {
+      const el = $('suporte'), btn = $('bIniciar');
+      if (!window.isSecureContext) { el.textContent = 'Página fora de HTTPS: o navegador bloqueia o WebXR.'; return; }
+      if (!navigator.xr) {
+        el.innerHTML = 'Este navegador não oferece WebXR. Use o Chrome ou o Samsung Internet no Android. ' +
+                       'No iPhone, use o <a href="indoor.html">modo indoor por marcadores</a>.';
+        return;
+      }
+      try {
+        const ok = await navigator.xr.isSessionSupported('immersive-ar');
+        if (ok) { el.textContent = 'WebXR de realidade aumentada disponível neste aparelho.'; btn.disabled = false; }
+        else el.innerHTML = 'Este aparelho não oferece AR por WebXR (verifique se o "Google Play Services for AR" está instalado). ' +
+                            'Alternativa: <a href="indoor.html">modo indoor por marcadores</a>.';
+      } catch (e) { el.textContent = 'Falha ao verificar o WebXR: ' + e.message; }
+    }
+
+    // ---------- Sessão de AR ----------
+    async function iniciarSessao() {
+      $('bIniciar').disabled = true;
+      try {
+        sessao = await navigator.xr.requestSession('immersive-ar', {
+          requiredFeatures: ['hit-test'],
+          optionalFeatures: ['local-floor', 'dom-overlay'],
+          domOverlay: { root: $('overlay') }
+        });
+      } catch (e) {
+        $('suporte').textContent = 'Não foi possível iniciar a AR: ' + e.message;
+        $('bIniciar').disabled = false;
+        return;
+      }
+
+      // Prefere o espaço com piso; se o aparelho não oferecer, usa o espaço local
+      tipoRef = 'local-floor';
+      try { await sessao.requestReferenceSpace('local-floor'); } catch (e) { tipoRef = 'local'; }
+      renderer.xr.setReferenceSpaceType(tipoRef);
+      await renderer.xr.setSession(sessao);
+
+      const viewer = await sessao.requestReferenceSpace('viewer');
+      hitSource = await sessao.requestHitTestSource({ space: viewer });
+
+      sessao.addEventListener('select', aoTocar);
+      sessao.addEventListener('end', aoEncerrar);
+
+      $('overlay').style.display = 'block';
+      $('inicio').style.display = 'none';
+      $('saida').style.display = 'none';
+      montarFixos();
+      fixos.visible = true;
+      $('bFixos').setAttribute('aria-pressed', 'true');
+      colocados.forEach(c => scene.remove(c.grupo));
+      colocados.length = 0;
+    }
+
+    function aoEncerrar() {
+      hitSource = null; sessao = null;
+      reticulo.visible = false;
+      $('overlay').style.display = 'none';
+      $('inicio').style.display = 'block';
+      $('bIniciar').disabled = false;
+
+      const lista = colocados.map(c => ({
+        nome: c.nome,
+        x: +c.grupo.position.x.toFixed(2),
+        y: +c.grupo.position.y.toFixed(2),
+        z: +c.grupo.position.z.toFixed(2)
+      }));
+      if (lista.length) {
+        $('json').value = JSON.stringify({ referencia: tipoRef, pontos: lista }, null, 2);
+        $('saida').style.display = 'block';
+      }
+    }
+
+    function aoTocar() {
+      if (!reticulo.visible) return;
+      const n = colocados.length + 1;
+      const nome = 'Ponto ' + n;
+      const grupo = criarMarcador(nome, CORES[(n - 1) % CORES.length]);
+      grupo.position.setFromMatrixPosition(reticulo.matrix);
+      scene.add(grupo);
+      colocados.push({ nome, grupo });
+    }
+
+    // ---------- Interface ----------
+    // Impede que toques nos botões também sejam interpretados como "colocar ponto" na cena
+    ['bDesfazer', 'bFixos', 'bSair'].forEach(id =>
+      $(id).addEventListener('beforexrselect', e => e.preventDefault()));
+
+    $('bIniciar').addEventListener('click', iniciarSessao);
+    $('bSair').addEventListener('click', () => { if (sessao) sessao.end(); });
+    $('bDesfazer').addEventListener('click', () => {
+      const u = colocados.pop();
+      if (u) scene.remove(u.grupo);
+    });
+    $('bFixos').addEventListener('click', () => {
+      fixos.visible = !fixos.visible;
+      $('bFixos').setAttribute('aria-pressed', String(fixos.visible));
+    });
+    $('bCopiar').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText($('json').value); $('bCopiar').textContent = 'Copiado'; }
+      catch (e) { $('json').select(); $('bCopiar').textContent = 'Selecione e copie manualmente'; }
+    });
+
+    // ---------- Laço de renderização ----------
+    const v = new THREE.Vector3(), w = new THREE.Vector3();
+    renderer.setAnimationLoop((tempo, quadro) => {
+      if (quadro && hitSource) {
+        const res = quadro.getHitTestResults(hitSource);
+        if (res.length) {
+          const pose = res[0].getPose(renderer.xr.getReferenceSpace());
+          if (pose) { reticulo.visible = true; reticulo.matrix.fromArray(pose.transform.matrix); }
+        } else {
+          reticulo.visible = false;
+        }
+      }
+      renderer.render(scene, camera);
+
+      if (sessao && ++quadros % 15 === 0) {
+        renderer.xr.getCamera().getWorldPosition(v);
+        let txt = reticulo.visible ? 'Superfície detectada: toque para colocar um ponto.' : 'Procurando superfícies: mova o celular devagar.';
+        if (fixos.visible && fixos.children.length) {
+          let menor = Infinity, nome = '';
+          fixos.children.forEach((m, i) => {
+            m.getWorldPosition(w);
+            const d = Math.hypot(w.x - v.x, w.z - v.z);
+            if (d < menor) { menor = d; nome = PONTOS_FIXOS[i].nome; }
+          });
+          txt += ' · Mais próximo: ' + nome + ' (' + menor.toFixed(1) + ' m)';
+        }
+        $('estadoXR').textContent = txt + ' · Pontos colocados: ' + colocados.length;
+      }
+    });
+
+    verificarSuporte();
+  </script>
+</body>
+</html>
