@@ -17,6 +17,10 @@
     button.sec { background: transparent; color: #5fd49a; border: 1px solid #5fd49a; }
     button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
     a { color: #5fd49a; }
+    label.campo { display: block; margin-top: 14px; font-weight: 600; font-size: .95rem; }
+    input[type="text"] { width: 100%; box-sizing: border-box; margin-top: 4px; padding: 12px; font: inherit;
+                         border: 0; border-radius: 10px; background: #fff; color: #111; }
+    input[type="text"]:focus-visible { outline: 3px solid #5fd49a; outline-offset: 2px; }
     #suporte { padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,.08); margin: 14px 0; }
     #saida { display: none; margin-top: 18px; }
     #saida textarea { width: 100%; box-sizing: border-box; height: 9rem; font: 12px ui-monospace, monospace;
@@ -29,7 +33,7 @@
             font-size: 14px; line-height: 1.4; }
     #botoes { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 10px; padding: 12px;
               justify-content: center; background: rgba(0,0,0,.45); }
-    #botoes button { flex: 1; max-width: 10rem; }
+    #botoes button { flex: 1; max-width: 10rem; padding: 10px 6px; font-size: 14px; }
     #botoes button[aria-pressed="false"] { background: transparent; color: #5fd49a; border: 1px solid #5fd49a; }
   </style>
 </head>
@@ -43,6 +47,9 @@
       <li>Aponte para o chão, aguarde o anel branco e <strong>toque na tela</strong> para colocar um novo ponto.</li>
       <li>Para resultados repetíveis, inicie sempre do mesmo lugar (por exemplo, a porta de entrada) e olhando na mesma direção.</li>
     </ul>
+
+    <label class="campo" for="txtPlaca">Texto das placas colocadas por toque</label>
+    <input id="txtPlaca" type="text" maxlength="120" value="Olá, AR!">
 
     <div id="suporte" aria-live="polite">Verificando suporte a WebXR…</div>
     <button id="bIniciar" type="button" disabled>Iniciar AR</button>
@@ -58,6 +65,7 @@
   <div id="overlay">
     <div id="topo"><span id="estadoXR">Procurando superfícies…</span></div>
     <div id="botoes">
+      <button id="bModo" type="button">Toque: ponto</button>
       <button id="bDesfazer" type="button">Desfazer</button>
       <button id="bFixos" type="button" aria-pressed="true">Pontos fixos</button>
       <button id="bSair" type="button">Sair</button>
@@ -75,13 +83,19 @@
       { nome: 'Sala A',  x:  2, z: -3.0, cor: 0xf2c230 },
       { nome: 'Sala B',  x: -2, z: -3.0, cor: 0xe0453a },
     ];
+    // Placas flutuantes fixas. texto aceita quebras de linha (\n). altura = altura do centro da placa em relação ao piso (m).
+    const PLACAS_FIXAS = [
+      { texto: 'Bem-vindo!\nSiga em frente até a Sala A', x: 0,  z: -2.5, altura: 1.7, cor: '#1f6f4a' },
+      { texto: 'Saída',                                    x: -1, z:  1.5, altura: 2.0, cor: '#a32a2a' },
+    ];
     const ALTURA_OLHOS = 1.4;   // usada só se o aparelho não fornecer o piso ('local-floor')
     const CORES = [0x3aa0e0, 0xf2c230, 0xe0453a, 0x5fd49a, 0xb06cf0];
     // ==================================================
 
     const $ = id => document.getElementById(id);
     let sessao = null, hitSource = null, tipoRef = 'local-floor';
-    const colocados = [];       // {nome, grupo}
+    const colocados = [];       // {nome, grupo, placa}
+    let modo = 'marcador';      // o que o toque coloca: 'marcador' ou 'placa'
     let quadros = 0;
 
     // ---------- Cena ----------
@@ -107,6 +121,8 @@
 
     const fixos = new THREE.Group();
     scene.add(fixos);
+    const placasFixas = new THREE.Group();
+    scene.add(placasFixas);
 
     function rotulo(texto) {
       const c = document.createElement('canvas');
@@ -142,14 +158,109 @@
     }
 
     function montarFixos() {
-      fixos.clear();
+      limparGrupo(fixos);
+      limparGrupo(placasFixas);
       const y = tipoRef === 'local-floor' ? 0 : -ALTURA_OLHOS;
       PONTOS_FIXOS.forEach(p => {
         const m = criarMarcador(p.nome, p.cor);
         m.position.set(p.x, y, p.z);
         fixos.add(m);
       });
+      PLACAS_FIXAS.forEach(p => {
+        const pl = criarPlaca(p.texto, { altura: p.altura, cor: p.cor, largura: p.largura });
+        pl.position.set(p.x, y, p.z);
+        placasFixas.add(pl);
+      });
     }
+
+    // ---------- Placa flutuante com texto personalizado ----------
+    // Quebra o texto em linhas que cabem na largura (respeita \n).
+    function quebrarTexto(ctx, texto, larguraMax) {
+      const linhas = [];
+      String(texto).split('\n').forEach(paragrafo => {
+        let atual = '';
+        paragrafo.split(/\s+/).filter(Boolean).forEach(palavra => {
+          const teste = atual ? atual + ' ' + palavra : palavra;
+          if (!atual || ctx.measureText(teste).width <= larguraMax) atual = teste;
+          else { linhas.push(atual); atual = palavra; }
+        });
+        linhas.push(atual);
+      });
+      return linhas;
+    }
+
+    // Desenha a placa em um canvas; a altura se ajusta à quantidade de linhas.
+    function desenharPlaca(texto, o) {
+      const LARG = 1024, PAD = 48, LH = Math.round(o.fonte * 1.25);
+      const c = document.createElement('canvas');
+      c.width = LARG;
+      const g = c.getContext('2d');
+      g.font = 'bold ' + o.fonte + 'px system-ui, sans-serif';
+      const linhas = quebrarTexto(g, texto, LARG - 2 * PAD);
+      c.height = Math.max(2 * PAD + linhas.length * LH, 128);   // redimensionar reinicia o estado do contexto
+
+      g.fillStyle = o.cor;
+      g.strokeStyle = o.corBorda;
+      g.lineWidth = 10;
+      g.beginPath();
+      if (g.roundRect) g.roundRect(5, 5, LARG - 10, c.height - 10, 40); else g.rect(5, 5, LARG - 10, c.height - 10);
+      g.fill();
+      g.stroke();
+
+      g.font = 'bold ' + o.fonte + 'px system-ui, sans-serif';
+      g.fillStyle = o.corTexto;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      linhas.forEach((linha, i) => g.fillText(linha, LARG / 2, PAD + LH * (i + 0.5)));
+      return c;
+    }
+
+    // Cria uma placa flutuante. A origem do grupo fica no piso (como em criarMarcador);
+    // o painel flutua em "altura" metros e gira para o usuário (ver "girar" no laço de renderização).
+    // opcoes: largura (m), altura (m), fonte (px no canvas), cor, corBorda, corTexto, haste (true/false)
+    function criarPlaca(texto, opcoes = {}) {
+      const o = Object.assign({ largura: 0.8, altura: 1.6, fonte: 56,
+                                cor: '#1f6f4a', corBorda: '#ffffff', corTexto: '#ffffff', haste: true }, opcoes);
+      const grupo = new THREE.Group();
+      const painel = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
+        new THREE.MeshBasicMaterial({ transparent: true, side: THREE.DoubleSide }));
+      const haste = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 1, 12),
+        new THREE.MeshStandardMaterial({ color: 0xcccccc }));
+      grupo.add(painel, haste);
+
+      // Redesenha a placa com outro texto (útil para valores que mudam, como distâncias)
+      grupo.userData.atualizar = novoTexto => {
+        const c = desenharPlaca(novoTexto, o);
+        const altPainel = o.largura * c.height / c.width;
+        if (painel.material.map) painel.material.map.dispose();
+        const tex = new THREE.CanvasTexture(c);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        painel.material.map = tex;
+        painel.material.needsUpdate = true;
+        painel.geometry.dispose();
+        painel.geometry = new THREE.PlaneGeometry(o.largura, altPainel);
+        painel.position.y = o.altura;
+        const altHaste = o.altura - altPainel / 2;
+        haste.visible = o.haste && altHaste > 0.05;
+        if (haste.visible) { haste.scale.y = altHaste; haste.position.y = altHaste / 2; }
+        grupo.userData.texto = novoTexto;
+      };
+      grupo.userData.placa = true;
+      grupo.userData.atualizar(texto);
+      return grupo;
+    }
+
+    // Libera geometrias, materiais e texturas de um objeto removido
+    function descartar(obj) {
+      obj.traverse(n => {
+        if (n.geometry) n.geometry.dispose();
+        if (n.material) {
+          if (n.material.map) n.material.map.dispose();
+          n.material.dispose();
+        }
+      });
+    }
+    function limparGrupo(g) { g.children.slice().forEach(c => { g.remove(c); descartar(c); }); }
 
     // ---------- Suporte ----------
     async function verificarSuporte() {
@@ -200,8 +311,9 @@
       $('saida').style.display = 'none';
       montarFixos();
       fixos.visible = true;
+      placasFixas.visible = true;
       $('bFixos').setAttribute('aria-pressed', 'true');
-      colocados.forEach(c => scene.remove(c.grupo));
+      colocados.forEach(c => { scene.remove(c.grupo); descartar(c.grupo); });
       colocados.length = 0;
     }
 
@@ -212,12 +324,17 @@
       $('inicio').style.display = 'block';
       $('bIniciar').disabled = false;
 
-      const lista = colocados.map(c => ({
-        nome: c.nome,
-        x: +c.grupo.position.x.toFixed(2),
-        y: +c.grupo.position.y.toFixed(2),
-        z: +c.grupo.position.z.toFixed(2)
-      }));
+      const lista = colocados.map(c => {
+        const item = {
+          nome: c.nome,
+          tipo: c.placa ? 'placa' : 'ponto',
+          x: +c.grupo.position.x.toFixed(2),
+          y: +c.grupo.position.y.toFixed(2),
+          z: +c.grupo.position.z.toFixed(2)
+        };
+        if (c.placa) item.texto = c.grupo.userData.texto;
+        return item;
+      });
       if (lista.length) {
         $('json').value = JSON.stringify({ referencia: tipoRef, pontos: lista }, null, 2);
         $('saida').style.display = 'block';
@@ -227,26 +344,38 @@
     function aoTocar() {
       if (!reticulo.visible) return;
       const n = colocados.length + 1;
-      const nome = 'Ponto ' + n;
-      const grupo = criarMarcador(nome, CORES[(n - 1) % CORES.length]);
+      const ehPlaca = modo === 'placa';
+      const nome = (ehPlaca ? 'Placa ' : 'Ponto ') + n;
+      let grupo;
+      if (ehPlaca) {
+        const texto = $('txtPlaca').value.trim() || 'Placa';
+        grupo = criarPlaca(texto);
+      } else {
+        grupo = criarMarcador(nome, CORES[(n - 1) % CORES.length]);
+      }
       grupo.position.setFromMatrixPosition(reticulo.matrix);
       scene.add(grupo);
-      colocados.push({ nome, grupo });
+      colocados.push({ nome, grupo, placa: ehPlaca });
     }
 
     // ---------- Interface ----------
     // Impede que toques nos botões também sejam interpretados como "colocar ponto" na cena
-    ['bDesfazer', 'bFixos', 'bSair'].forEach(id =>
+    ['bModo', 'bDesfazer', 'bFixos', 'bSair'].forEach(id =>
       $(id).addEventListener('beforexrselect', e => e.preventDefault()));
 
     $('bIniciar').addEventListener('click', iniciarSessao);
+    $('bModo').addEventListener('click', () => {
+      modo = modo === 'marcador' ? 'placa' : 'marcador';
+      $('bModo').textContent = modo === 'marcador' ? 'Toque: ponto' : 'Toque: placa';
+    });
     $('bSair').addEventListener('click', () => { if (sessao) sessao.end(); });
     $('bDesfazer').addEventListener('click', () => {
       const u = colocados.pop();
-      if (u) scene.remove(u.grupo);
+      if (u) { scene.remove(u.grupo); descartar(u.grupo); }
     });
     $('bFixos').addEventListener('click', () => {
       fixos.visible = !fixos.visible;
+      placasFixas.visible = fixos.visible;
       $('bFixos').setAttribute('aria-pressed', String(fixos.visible));
     });
     $('bCopiar').addEventListener('click', async () => {
@@ -256,6 +385,11 @@
 
     // ---------- Laço de renderização ----------
     const v = new THREE.Vector3(), w = new THREE.Vector3();
+    // Gira a placa em torno do eixo vertical para ficar de frente para o usuário
+    function girar(g) {
+      g.getWorldPosition(w);
+      g.rotation.y = Math.atan2(v.x - w.x, v.z - w.z);
+    }
     renderer.setAnimationLoop((tempo, quadro) => {
       if (quadro && hitSource) {
         const res = quadro.getHitTestResults(hitSource);
@@ -265,6 +399,11 @@
         } else {
           reticulo.visible = false;
         }
+      }
+      if (sessao) {
+        renderer.xr.getCamera().getWorldPosition(v);
+        placasFixas.children.forEach(girar);
+        colocados.forEach(c => { if (c.placa) girar(c.grupo); });
       }
       renderer.render(scene, camera);
 
