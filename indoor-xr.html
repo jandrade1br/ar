@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WebAR Indoor (WebXR)</title>
+  <title>WebAR Indoor (WebXR) · v2</title>
   <style>
     :root { color-scheme: dark; }
     html, body { margin: 0; height: 100%; background: #10231a; color: #fff; font: 16px system-ui, sans-serif; }
@@ -51,6 +51,13 @@
     <label class="campo" for="txtPlaca">Texto das placas colocadas por toque</label>
     <input id="txtPlaca" type="text" maxlength="120" value="Olá, AR!">
 
+    <label class="campo" for="txtMidia">Imagem (PNG, JPG, WebP) ou modelo 3D (GLB, GLTF) colocado no modo "mídia"</label>
+    <input id="txtMidia" type="text" list="midias" maxlength="300" value="data/exemplo.png">
+    <datalist id="midias">
+      <option value="data/exemplo.png"></option>
+      <option value="data/exemplo.glb"></option>
+    </datalist>
+
     <div id="suporte" aria-live="polite">Verificando suporte a WebXR…</div>
     <button id="bIniciar" type="button" disabled>Iniciar AR</button>
     <a href="index.html" style="margin-left:12px">Menu</a>
@@ -74,6 +81,7 @@
 
   <script type="module">
     import * as THREE from './lib/three.module.min.js';
+    import { GLTFLoader } from './lib/GLTFLoader.js';
 
     // ================== CONFIGURAÇÃO ==================
     // Pontos fixos do ambiente. x = direita(+)/esquerda(−), z = atrás(+)/à frente(−), em metros,
@@ -88,6 +96,12 @@
       { texto: 'Bem-vindo!\nSiga em frente até a Sala A', x: 0,  z: -2.5, altura: 1.7, cor: '#1f6f4a' },
       { texto: 'Saída',                                    x: -1, z:  1.5, altura: 2.0, cor: '#a32a2a' },
     ];
+    // Placas de mídia fixas (imagem PNG/JPG/WebP ou modelo GLB/GLTF). Veja criarPlacaMidia() para todas as opções.
+    // Os arquivos devem estar no mesmo servidor (ou em um servidor que permita CORS).
+    const MIDIAS_FIXAS = [
+      { fonte: 'data/exemplo.png', x:  1.2, z: -2.0, altura: 1.5, largura: 0.7, legenda: 'Imagem PNG' },
+      { fonte: 'data/exemplo.glb', x: -1.2, z: -2.0, altura: 1.2, tamanho: 0.45, legenda: 'Modelo 3D' },
+    ];
     const ALTURA_OLHOS = 1.4;   // usada só se o aparelho não fornecer o piso ('local-floor')
     const CORES = [0x3aa0e0, 0xf2c230, 0xe0453a, 0x5fd49a, 0xb06cf0];
     // ==================================================
@@ -95,7 +109,9 @@
     const $ = id => document.getElementById(id);
     let sessao = null, hitSource = null, tipoRef = 'local-floor';
     const colocados = [];       // {nome, grupo, placa}
-    let modo = 'marcador';      // o que o toque coloca: 'marcador' ou 'placa'
+    let modo = 'marcador';      // o que o toque coloca: 'marcador', 'placa' ou 'midia'
+    let avisoTexto = '', avisoAte = 0;
+    function avisar(t) { avisoTexto = t; avisoAte = performance.now() + 4000; }
     let quadros = 0;
 
     // ---------- Cena ----------
@@ -123,6 +139,11 @@
     scene.add(fixos);
     const placasFixas = new THREE.Group();
     scene.add(placasFixas);
+    const midiasFixas = new THREE.Group();
+    scene.add(midiasFixas);
+    const relogio = new THREE.Clock();
+    const gltfLoader = new GLTFLoader();
+    const texLoader = new THREE.TextureLoader();
 
     function rotulo(texto) {
       const c = document.createElement('canvas');
@@ -160,6 +181,7 @@
     function montarFixos() {
       limparGrupo(fixos);
       limparGrupo(placasFixas);
+      limparGrupo(midiasFixas);
       const y = tipoRef === 'local-floor' ? 0 : -ALTURA_OLHOS;
       PONTOS_FIXOS.forEach(p => {
         const m = criarMarcador(p.nome, p.cor);
@@ -170,6 +192,13 @@
         const pl = criarPlaca(p.texto, { altura: p.altura, cor: p.cor, largura: p.largura });
         pl.position.set(p.x, y, p.z);
         placasFixas.add(pl);
+      });
+      MIDIAS_FIXAS.forEach(m => {
+        try {
+          const g = criarPlacaMidia(m.fonte, m);
+          g.position.set(m.x, y, m.z);
+          midiasFixas.add(g);
+        } catch (e) { avisar(e.message); }
       });
     }
 
@@ -250,17 +279,149 @@
       return grupo;
     }
 
-    // Libera geometrias, materiais e texturas de um objeto removido
+    // Libera geometrias, materiais e texturas de um objeto removido (inclui modelos com vários materiais)
     function descartar(obj) {
       obj.traverse(n => {
         if (n.geometry) n.geometry.dispose();
-        if (n.material) {
-          if (n.material.map) n.material.map.dispose();
-          n.material.dispose();
-        }
+        const mats = Array.isArray(n.material) ? n.material : (n.material ? [n.material] : []);
+        mats.forEach(m => {
+          Object.values(m).forEach(v => { if (v && v.isTexture) v.dispose(); });
+          m.dispose();
+        });
       });
     }
     function limparGrupo(g) { g.children.slice().forEach(c => { g.remove(c); descartar(c); }); }
+
+    // ---------- Placa de mídia: imagem PNG/JPG/WebP ou modelo 3D GLB/GLTF ----------
+    function extensao(url) { return String(url).split(/[?#]/)[0].split('.').pop().toLowerCase(); }
+
+    // Painel plano com texto (usado em legendas e mensagens de erro)
+    function criarPainelTexto(texto, largura, cor = '#222222') {
+      const c = desenharPlaca(texto, { fonte: 56, cor, corBorda: '#ffffff', corTexto: '#ffffff' });
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return new THREE.Mesh(new THREE.PlaneGeometry(largura, largura * c.height / c.width),
+        new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }));
+    }
+
+    // Cria uma placa flutuante cujo conteúdo é uma imagem ou um modelo 3D. Devolve o grupo imediatamente
+    // (com um indicador de carregamento) e preenche o conteúdo quando o arquivo termina de carregar.
+    // A origem do grupo fica no piso, como em criarMarcador() e criarPlaca().
+    //
+    // fonte: URL de .png/.jpg/.jpeg/.webp (imagem) ou .glb/.gltf (modelo 3D)
+    // opcoes:
+    //   altura           altura do centro da mídia em relação ao piso, em metros (imagem 1.5; modelo 1.2)
+    //   largura          largura da imagem, em metros (0.8); a altura segue a proporção do arquivo
+    //   tamanho          maior dimensão do modelo, em metros (0.5); o modelo é centralizado e redimensionado
+    //   legenda          texto opcional exibido abaixo da mídia
+    //   haste            poste do piso até a mídia (imagem: true; modelo: false)
+    //   olharParaUsuario gira a placa de frente para o usuário (imagem: true; modelo: false)
+    //   giro             rotação contínua do modelo, em rad/s (modelo: 0.6; imagem: 0)
+    //   moldura          cor CSS de uma moldura ao redor da imagem (padrão: sem moldura)
+    //   aoCarregar(g)    função chamada quando a mídia estiver pronta
+    //   aoErro(e)        função chamada se o arquivo não puder ser carregado
+    // Em grupo.userData.pronto há uma Promise resolvida quando o carregamento termina (com sucesso ou não).
+    function criarPlacaMidia(fonte, opcoes = {}) {
+      const ext = extensao(fonte);
+      const ehModelo = ['glb', 'gltf'].includes(ext);
+      if (!ehModelo && !['png', 'jpg', 'jpeg', 'webp'].includes(ext))
+        throw new Error('Formato não suportado: .' + ext + ' (use png, jpg, webp, glb ou gltf)');
+
+      const o = Object.assign({
+        altura: ehModelo ? 1.2 : 1.5, largura: 0.8, tamanho: 0.5, legenda: '',
+        haste: !ehModelo, olharParaUsuario: !ehModelo, giro: ehModelo ? 0.6 : 0,
+        moldura: null, aoCarregar: null, aoErro: null
+      }, opcoes);
+
+      const grupo = new THREE.Group();
+      const conteudo = new THREE.Group();            // recebe a altura e o giro contínuo
+      conteudo.position.y = o.altura;
+      grupo.add(conteudo);
+
+      const carregando = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.12),
+        new THREE.MeshBasicMaterial({ color: 0xcccccc, wireframe: true }));
+      conteudo.add(carregando);
+
+      let mixer = null, resolver;
+      grupo.userData.midia = true;
+      grupo.userData.fonte = fonte;
+      grupo.userData.olharParaUsuario = o.olharParaUsuario;
+      grupo.userData.pronto = new Promise(r => { resolver = r; });
+      grupo.userData.quadro = dt => {                // chamado a cada quadro pelo laço de renderização
+        if (carregando.parent) carregando.rotation.y += 2 * dt;
+        else if (o.giro) conteudo.rotation.y += o.giro * dt;
+        if (mixer) mixer.update(dt);
+      };
+
+      function finalizar(alturaMidia, larguraMidia) {
+        conteudo.remove(carregando);
+        carregando.geometry.dispose();
+        carregando.material.dispose();
+        let base = o.altura - alturaMidia / 2;
+        if (o.legenda) {
+          const leg = criarPainelTexto(o.legenda, Math.max(larguraMidia, 0.4));
+          const hLeg = leg.geometry.parameters.height;
+          leg.position.y = base - hLeg / 2 - 0.03;
+          grupo.add(leg);
+          grupo.userData.legenda = leg;              // gira para o usuário mesmo quando o modelo não gira
+          base = leg.position.y - hLeg / 2;
+        }
+        if (o.haste && base > 0.05) {
+          const haste = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, base, 12),
+            new THREE.MeshStandardMaterial({ color: 0xcccccc }));
+          haste.position.y = base / 2;
+          grupo.add(haste);
+        }
+        if (o.aoCarregar) o.aoCarregar(grupo);
+        resolver(grupo);
+      }
+
+      function falhar(erro) {
+        console.error('criarPlacaMidia:', fonte, erro);
+        conteudo.remove(carregando);
+        conteudo.add(criarPainelTexto('Falha ao carregar\n' + String(fonte).split('/').pop(), 0.6, '#a32a2a'));
+        grupo.userData.olharParaUsuario = true;
+        if (o.aoErro) o.aoErro(erro);
+        resolver(grupo);
+      }
+
+      if (ehModelo) {
+        gltfLoader.load(fonte, gltf => {
+          const modelo = gltf.scene;
+          const caixa = new THREE.Box3().setFromObject(modelo);
+          const tam = caixa.getSize(new THREE.Vector3());
+          const centro = caixa.getCenter(new THREE.Vector3());
+          const escala = o.tamanho / (Math.max(tam.x, tam.y, tam.z) || 1);
+          modelo.position.sub(centro);               // centraliza o modelo na origem
+          const pivo = new THREE.Group();
+          pivo.add(modelo);
+          pivo.scale.setScalar(escala);
+          conteudo.add(pivo);
+          if (gltf.animations && gltf.animations.length) {
+            mixer = new THREE.AnimationMixer(modelo);
+            gltf.animations.forEach(a => mixer.clipAction(a).play());
+          }
+          finalizar(tam.y * escala, Math.max(tam.x, tam.z) * escala);
+        }, undefined, falhar);
+      } else {
+        texLoader.load(fonte, tex => {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.anisotropy = 4;
+          const w = o.largura, hh = w * tex.image.height / tex.image.width;
+          if (o.moldura) {
+            const mold = new THREE.Mesh(new THREE.PlaneGeometry(w + 0.04, hh + 0.04),
+              new THREE.MeshBasicMaterial({ color: new THREE.Color(o.moldura), side: THREE.DoubleSide }));
+            mold.position.z = -0.002;
+            conteudo.add(mold);
+          }
+          // transparent + alphaTest preservam o fundo transparente de PNGs
+          conteudo.add(new THREE.Mesh(new THREE.PlaneGeometry(w, hh),
+            new THREE.MeshBasicMaterial({ map: tex, transparent: true, alphaTest: 0.02, side: THREE.DoubleSide })));
+          finalizar(hh + (o.moldura ? 0.04 : 0), w);
+        }, undefined, falhar);
+      }
+      return grupo;
+    }
 
     // ---------- Suporte ----------
     async function verificarSuporte() {
@@ -312,6 +473,7 @@
       montarFixos();
       fixos.visible = true;
       placasFixas.visible = true;
+      midiasFixas.visible = true;
       $('bFixos').setAttribute('aria-pressed', 'true');
       colocados.forEach(c => { scene.remove(c.grupo); descartar(c.grupo); });
       colocados.length = 0;
@@ -327,12 +489,13 @@
       const lista = colocados.map(c => {
         const item = {
           nome: c.nome,
-          tipo: c.placa ? 'placa' : 'ponto',
+          tipo: c.midia ? 'midia' : (c.placa ? 'placa' : 'ponto'),
           x: +c.grupo.position.x.toFixed(2),
           y: +c.grupo.position.y.toFixed(2),
           z: +c.grupo.position.z.toFixed(2)
         };
         if (c.placa) item.texto = c.grupo.userData.texto;
+        if (c.midia) item.fonte = c.grupo.userData.fonte;
         return item;
       });
       if (lista.length) {
@@ -344,18 +507,24 @@
     function aoTocar() {
       if (!reticulo.visible) return;
       const n = colocados.length + 1;
-      const ehPlaca = modo === 'placa';
-      const nome = (ehPlaca ? 'Placa ' : 'Ponto ') + n;
-      let grupo;
-      if (ehPlaca) {
-        const texto = $('txtPlaca').value.trim() || 'Placa';
-        grupo = criarPlaca(texto);
+      let nome, grupo, extra = {};
+      if (modo === 'placa') {
+        nome = 'Placa ' + n;
+        grupo = criarPlaca($('txtPlaca').value.trim() || 'Placa');
+        extra = { placa: true };
+      } else if (modo === 'midia') {
+        const fonte = $('txtMidia').value.trim();
+        nome = 'Mídia ' + n;
+        try { grupo = criarPlacaMidia(fonte, { legenda: $('txtPlaca').value.trim() }); }
+        catch (e) { avisar(e.message); return; }
+        extra = { midia: true };
       } else {
+        nome = 'Ponto ' + n;
         grupo = criarMarcador(nome, CORES[(n - 1) % CORES.length]);
       }
       grupo.position.setFromMatrixPosition(reticulo.matrix);
       scene.add(grupo);
-      colocados.push({ nome, grupo, placa: ehPlaca });
+      colocados.push(Object.assign({ nome, grupo }, extra));
     }
 
     // ---------- Interface ----------
@@ -365,8 +534,8 @@
 
     $('bIniciar').addEventListener('click', iniciarSessao);
     $('bModo').addEventListener('click', () => {
-      modo = modo === 'marcador' ? 'placa' : 'marcador';
-      $('bModo').textContent = modo === 'marcador' ? 'Toque: ponto' : 'Toque: placa';
+      modo = modo === 'marcador' ? 'placa' : (modo === 'placa' ? 'midia' : 'marcador');
+      $('bModo').textContent = { marcador: 'Toque: ponto', placa: 'Toque: placa', midia: 'Toque: mídia' }[modo];
     });
     $('bSair').addEventListener('click', () => { if (sessao) sessao.end(); });
     $('bDesfazer').addEventListener('click', () => {
@@ -376,6 +545,7 @@
     $('bFixos').addEventListener('click', () => {
       fixos.visible = !fixos.visible;
       placasFixas.visible = fixos.visible;
+      midiasFixas.visible = fixos.visible;
       $('bFixos').setAttribute('aria-pressed', String(fixos.visible));
     });
     $('bCopiar').addEventListener('click', async () => {
@@ -385,12 +555,20 @@
 
     // ---------- Laço de renderização ----------
     const v = new THREE.Vector3(), w = new THREE.Vector3();
+    let dt_atual = 0;
+    // Placas de mídia: orientação para o usuário, giro contínuo e animações do modelo
+    function atualizarMidia(g) {
+      if (g.userData.olharParaUsuario) girar(g);
+      else if (g.userData.legenda) girar(g.userData.legenda);
+      if (g.userData.quadro) g.userData.quadro(dt_atual);
+    }
     // Gira a placa em torno do eixo vertical para ficar de frente para o usuário
     function girar(g) {
       g.getWorldPosition(w);
       g.rotation.y = Math.atan2(v.x - w.x, v.z - w.z);
     }
     renderer.setAnimationLoop((tempo, quadro) => {
+      const dt = dt_atual = Math.min(relogio.getDelta(), 0.1);
       if (quadro && hitSource) {
         const res = quadro.getHitTestResults(hitSource);
         if (res.length) {
@@ -403,7 +581,11 @@
       if (sessao) {
         renderer.xr.getCamera().getWorldPosition(v);
         placasFixas.children.forEach(girar);
-        colocados.forEach(c => { if (c.placa) girar(c.grupo); });
+        midiasFixas.children.forEach(atualizarMidia);
+        colocados.forEach(c => {
+          if (c.placa) girar(c.grupo);
+          else if (c.midia) atualizarMidia(c.grupo);
+        });
       }
       renderer.render(scene, camera);
 
@@ -419,6 +601,7 @@
           });
           txt += ' · Mais próximo: ' + nome + ' (' + menor.toFixed(1) + ' m)';
         }
+        if (performance.now() < avisoAte) txt = avisoTexto + ' · ' + txt;
         $('estadoXR').textContent = txt + ' · Pontos colocados: ' + colocados.length;
       }
     });
