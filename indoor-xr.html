@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WebAR Indoor (WebXR) · v2</title>
+  <title>WebAR Indoor (WebXR) · v3</title>
   <style>
     :root { color-scheme: dark; }
     html, body { margin: 0; height: 100%; background: #10231a; color: #fff; font: 16px system-ui, sans-serif; }
@@ -33,7 +33,10 @@
             font-size: 14px; line-height: 1.4; }
     #botoes { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 10px; padding: 12px;
               justify-content: center; background: rgba(0,0,0,.45); }
-    #botoes button { flex: 1; max-width: 10rem; padding: 10px 6px; font-size: 14px; }
+    #botoes { flex-wrap: wrap; }
+    #botoes button { flex: 1 1 28%; max-width: 10rem; padding: 10px 6px; font-size: 14px; }
+    label.chk { display: flex; gap: 10px; align-items: center; margin-top: 14px; font-weight: 400; font-size: .95rem; }
+    label.chk input { width: 20px; height: 20px; }
     #botoes button[aria-pressed="false"] { background: transparent; color: #5fd49a; border: 1px solid #5fd49a; }
   </style>
 </head>
@@ -58,6 +61,11 @@
       <option value="data/exemplo.glb"></option>
     </datalist>
 
+    <label class="campo" for="txtAlturaParede">Altura das paredes marcadas por toque (m)</label>
+    <input id="txtAlturaParede" type="text" inputmode="decimal" value="2.6">
+    <label class="chk"><input type="checkbox" id="chkParedesSalvas"> Carregar as paredes salvas da última sessão</label>
+    <button id="bLimparSalvas" class="sec" type="button" style="margin-top:8px">Apagar paredes salvas</button>
+
     <div id="suporte" aria-live="polite">Verificando suporte a WebXR…</div>
     <button id="bIniciar" type="button" disabled>Iniciar AR</button>
     <a href="index.html" style="margin-left:12px">Menu</a>
@@ -75,6 +83,7 @@
       <button id="bModo" type="button">Toque: ponto</button>
       <button id="bDesfazer" type="button">Desfazer</button>
       <button id="bFixos" type="button" aria-pressed="true">Pontos fixos</button>
+      <button id="bParedes" type="button">Paredes: visíveis</button>
       <button id="bSair" type="button">Sair</button>
     </div>
   </div>
@@ -102,6 +111,13 @@
       { fonte: 'data/exemplo.png', x:  1.2, z: -2.0, altura: 1.5, largura: 0.7, legenda: 'Imagem PNG' },
       { fonte: 'data/exemplo.glb', x: -1.2, z: -2.0, altura: 1.2, tamanho: 0.45, legenda: 'Modelo 3D' },
     ];
+    // Paredes (oclusores): objetos virtuais atrás delas ficam ocultos. Cada parede é um segmento entre dois pontos
+    // do piso, em metros, no mesmo sistema de coordenadas dos pontos fixos (x: direita+, z: atrás+).
+    // Deixe uma abertura entre dois segmentos para representar uma porta. "altura" é opcional.
+    const PAREDES_FIXAS = [
+      // { x1: -3, z1: -4, x2: 3, z2: -4, altura: 2.6 },   // exemplo: parede de 6 m, 4 m à frente
+    ];
+    const ALTURA_PAREDE = 2.6;
     const ALTURA_OLHOS = 1.4;   // usada só se o aparelho não fornecer o piso ('local-floor')
     const CORES = [0x3aa0e0, 0xf2c230, 0xe0453a, 0x5fd49a, 0xb06cf0];
     // ==================================================
@@ -141,6 +157,10 @@
     scene.add(placasFixas);
     const midiasFixas = new THREE.Group();
     scene.add(midiasFixas);
+    const paredesGrupo = new THREE.Group();
+    scene.add(paredesGrupo);
+    let modoParedes = 1;        // 0 = ocultas (ocluem sem aparecer), 1 = visíveis (para conferir), 2 = desligadas
+    let paredePendente = null;  // primeiro toque de uma parede em criação
     const relogio = new THREE.Clock();
     const gltfLoader = new GLTFLoader();
     const texLoader = new THREE.TextureLoader();
@@ -157,7 +177,7 @@
       g.font = 'bold 60px system-ui, sans-serif';
       g.textAlign = 'center'; g.textBaseline = 'middle';
       g.fillText(texto, 256, 66);
-      const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false }));
+      const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: true }));
       s.scale.set(0.6, 0.15, 1);
       s.renderOrder = 10;
       return s;
@@ -182,6 +202,7 @@
       limparGrupo(fixos);
       limparGrupo(placasFixas);
       limparGrupo(midiasFixas);
+      limparGrupo(paredesGrupo);
       const y = tipoRef === 'local-floor' ? 0 : -ALTURA_OLHOS;
       PONTOS_FIXOS.forEach(p => {
         const m = criarMarcador(p.nome, p.cor);
@@ -192,6 +213,10 @@
         const pl = criarPlaca(p.texto, { altura: p.altura, cor: p.cor, largura: p.largura });
         pl.position.set(p.x, y, p.z);
         placasFixas.add(pl);
+      });
+      PAREDES_FIXAS.forEach(p => {
+        try { adicionarParede(p.x1, p.z1, p.x2, p.z2, { altura: p.altura || ALTURA_PAREDE, base: p.base !== undefined ? p.base : y }); }
+        catch (e) { avisar(e.message); }
       });
       MIDIAS_FIXAS.forEach(m => {
         try {
@@ -423,6 +448,77 @@
       return grupo;
     }
 
+    // ---------- Paredes (oclusores) ----------
+    // Cria uma parede entre dois pontos do piso. Ela grava apenas a profundidade (colorWrite desligado),
+    // então não aparece, mas esconde tudo o que estiver atrás dela. Origem do grupo no centro da parede.
+    // opcoes: altura (m), base (altura do piso em y).
+    function criarParede(x1, z1, x2, z2, opcoes = {}) {
+      const o = Object.assign({ altura: ALTURA_PAREDE, base: 0 }, opcoes);
+      const dx = x2 - x1, dz = z2 - z1, comp = Math.hypot(dx, dz);
+      if (comp < 0.1) throw new Error('Parede muito curta (mínimo de 10 cm)');
+
+      const grupo = new THREE.Group();
+      const geo = new THREE.PlaneGeometry(comp, o.altura);
+
+      const oclusor = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide }));
+      oclusor.renderOrder = -10;                      // desenhada antes dos demais objetos
+
+      const visual = new THREE.Group();               // apoio para conferir o alinhamento
+      visual.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+        color: 0x3aa0e0, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false })));
+      visual.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0xffffff })));
+
+      grupo.add(oclusor, visual);
+      grupo.position.set((x1 + x2) / 2, o.base + o.altura / 2, (z1 + z2) / 2);
+      grupo.rotation.y = Math.atan2(-dz, dx);         // alinha o eixo x do painel ao segmento
+      const r = n => +n.toFixed(2);
+      grupo.userData.parede = { x1: r(x1), z1: r(z1), x2: r(x2), z2: r(z2), altura: r(o.altura), base: r(o.base) };
+      grupo.userData.oclusor = oclusor;
+      grupo.userData.visual = visual;
+      return grupo;
+    }
+
+    function aplicarModoParedes() {
+      paredesGrupo.children.forEach(g => {
+        g.userData.oclusor.visible = modoParedes !== 2;
+        g.userData.visual.visible = modoParedes === 1;
+      });
+      $('bParedes').textContent = 'Paredes: ' + ['ocultas', 'visíveis', 'desligadas'][modoParedes];
+    }
+
+    function adicionarParede(x1, z1, x2, z2, opcoes) {
+      const g = criarParede(x1, z1, x2, z2, opcoes);
+      paredesGrupo.add(g);
+      aplicarModoParedes();
+      return g;
+    }
+
+    function cancelarPendente() {
+      if (!paredePendente) return;
+      scene.remove(paredePendente.marca);
+      descartar(paredePendente.marca);
+      paredePendente = null;
+    }
+
+    // Paredes marcadas por toque podem ser guardadas no aparelho e recarregadas na próxima sessão.
+    // Só valem se a sessão for iniciada do mesmo lugar e na mesma direção.
+    const CHAVE_PAREDES = 'webar_paredes_v1';
+    function salvarParedes() {
+      const lista = colocados.filter(c => c.parede).map(c => c.grupo.userData.parede);
+      if (!lista.length) return;
+      try { localStorage.setItem(CHAVE_PAREDES, JSON.stringify(lista)); } catch (e) { /* armazenamento indisponível */ }
+    }
+    function carregarParedesSalvas() {
+      let lista = [];
+      try { lista = JSON.parse(localStorage.getItem(CHAVE_PAREDES) || '[]'); } catch (e) { return; }
+      lista.forEach((p, i) => {
+        try {
+          const g = adicionarParede(p.x1, p.z1, p.x2, p.z2, { altura: p.altura, base: p.base });
+          colocados.push({ nome: 'Parede salva ' + (i + 1), grupo: g, parede: true });
+        } catch (e) { /* ignora segmentos inválidos */ }
+      });
+    }
+
     // ---------- Suporte ----------
     async function verificarSuporte() {
       const el = $('suporte'), btn = $('bIniciar');
@@ -475,8 +571,11 @@
       placasFixas.visible = true;
       midiasFixas.visible = true;
       $('bFixos').setAttribute('aria-pressed', 'true');
-      colocados.forEach(c => { scene.remove(c.grupo); descartar(c.grupo); });
+      cancelarPendente();
+      colocados.forEach(c => { c.grupo.removeFromParent(); descartar(c.grupo); });
       colocados.length = 0;
+      if ($('chkParedesSalvas').checked) carregarParedesSalvas();
+      aplicarModoParedes();
     }
 
     function aoEncerrar() {
@@ -486,7 +585,10 @@
       $('inicio').style.display = 'block';
       $('bIniciar').disabled = false;
 
+      cancelarPendente();
+      salvarParedes();
       const lista = colocados.map(c => {
+        if (c.parede) return Object.assign({ nome: c.nome, tipo: 'parede' }, c.grupo.userData.parede);
         const item = {
           nome: c.nome,
           tipo: c.midia ? 'midia' : (c.placa ? 'placa' : 'ponto'),
@@ -507,6 +609,26 @@
     function aoTocar() {
       if (!reticulo.visible) return;
       const n = colocados.length + 1;
+
+      if (modo === 'parede') {
+        const p = new THREE.Vector3().setFromMatrixPosition(reticulo.matrix);
+        if (!paredePendente) {                         // primeiro toque: extremidade inicial
+          const marca = new THREE.Mesh(new THREE.SphereGeometry(0.05, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff4444 }));
+          marca.position.copy(p);
+          scene.add(marca);
+          paredePendente = { x: p.x, y: p.y, z: p.z, marca };
+          return;
+        }
+        const a = paredePendente;                      // segundo toque: extremidade final
+        const altura = parseFloat(String($('txtAlturaParede').value).replace(',', '.')) || ALTURA_PAREDE;
+        let g;
+        try { g = adicionarParede(a.x, a.z, p.x, p.z, { altura, base: (a.y + p.y) / 2 }); }
+        catch (e) { avisar(e.message); return; }
+        cancelarPendente();
+        colocados.push({ nome: 'Parede ' + n, grupo: g, parede: true });
+        return;
+      }
+
       let nome, grupo, extra = {};
       if (modo === 'placa') {
         nome = 'Placa ' + n;
@@ -529,18 +651,25 @@
 
     // ---------- Interface ----------
     // Impede que toques nos botões também sejam interpretados como "colocar ponto" na cena
-    ['bModo', 'bDesfazer', 'bFixos', 'bSair'].forEach(id =>
+    ['bModo', 'bDesfazer', 'bFixos', 'bParedes', 'bSair'].forEach(id =>
       $(id).addEventListener('beforexrselect', e => e.preventDefault()));
 
     $('bIniciar').addEventListener('click', iniciarSessao);
     $('bModo').addEventListener('click', () => {
-      modo = modo === 'marcador' ? 'placa' : (modo === 'placa' ? 'midia' : 'marcador');
-      $('bModo').textContent = { marcador: 'Toque: ponto', placa: 'Toque: placa', midia: 'Toque: mídia' }[modo];
+      const ordem = ['marcador', 'placa', 'midia', 'parede'];
+      modo = ordem[(ordem.indexOf(modo) + 1) % ordem.length];
+      if (modo !== 'parede') cancelarPendente();
+      $('bModo').textContent = { marcador: 'Toque: ponto', placa: 'Toque: placa', midia: 'Toque: mídia', parede: 'Toque: parede' }[modo];
+    });
+    $('bParedes').addEventListener('click', () => { modoParedes = (modoParedes + 1) % 3; aplicarModoParedes(); });
+    $('bLimparSalvas').addEventListener('click', () => {
+      try { localStorage.removeItem(CHAVE_PAREDES); $('bLimparSalvas').textContent = 'Paredes salvas apagadas'; } catch (e) { /* ignora */ }
     });
     $('bSair').addEventListener('click', () => { if (sessao) sessao.end(); });
     $('bDesfazer').addEventListener('click', () => {
+      if (paredePendente) { cancelarPendente(); return; }
       const u = colocados.pop();
-      if (u) { scene.remove(u.grupo); descartar(u.grupo); }
+      if (u) { u.grupo.removeFromParent(); descartar(u.grupo); }
     });
     $('bFixos').addEventListener('click', () => {
       fixos.visible = !fixos.visible;
@@ -601,6 +730,7 @@
           });
           txt += ' · Mais próximo: ' + nome + ' (' + menor.toFixed(1) + ' m)';
         }
+        if (paredePendente) txt = 'Parede: toque na outra extremidade · ' + txt;
         if (performance.now() < avisoAte) txt = avisoTexto + ' · ' + txt;
         $('estadoXR').textContent = txt + ' · Pontos colocados: ' + colocados.length;
       }
