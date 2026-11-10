@@ -228,6 +228,9 @@
     }
 
     // ---------- Placa flutuante com texto personalizado ----------
+    // Descarta opções indefinidas, para que não substituam os valores padrão (ex.: largura: undefined)
+    function definidas(o) { return Object.fromEntries(Object.entries(o || {}).filter(([, v]) => v !== undefined)); }
+
     // Quebra o texto em linhas que cabem na largura (respeita \n).
     function quebrarTexto(ctx, texto, larguraMax) {
       const linhas = [];
@@ -274,7 +277,7 @@
     // opcoes: largura (m), altura (m), fonte (px no canvas), cor, corBorda, corTexto, haste (true/false)
     function criarPlaca(texto, opcoes = {}) {
       const o = Object.assign({ largura: 0.8, altura: 1.6, fonte: 56,
-                                cor: '#1f6f4a', corBorda: '#ffffff', corTexto: '#ffffff', haste: true }, opcoes);
+                                cor: '#1f6f4a', corBorda: '#ffffff', corTexto: '#ffffff', haste: true }, definidas(opcoes));
       const grupo = new THREE.Group();
       const painel = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
         new THREE.MeshBasicMaterial({ transparent: true, side: THREE.DoubleSide }));
@@ -356,7 +359,7 @@
         altura: ehModelo ? 1.2 : 1.5, largura: 0.8, tamanho: 0.5, legenda: '',
         haste: !ehModelo, olharParaUsuario: !ehModelo, giro: ehModelo ? 0.6 : 0,
         moldura: null, aoCarregar: null, aoErro: null
-      }, opcoes);
+      }, definidas(opcoes));
 
       const grupo = new THREE.Group();
       const conteudo = new THREE.Group();            // recebe a altura e o giro contínuo
@@ -453,7 +456,7 @@
     // então não aparece, mas esconde tudo o que estiver atrás dela. Origem do grupo no centro da parede.
     // opcoes: altura (m), base (altura do piso em y).
     function criarParede(x1, z1, x2, z2, opcoes = {}) {
-      const o = Object.assign({ altura: ALTURA_PAREDE, base: 0 }, opcoes);
+      const o = Object.assign({ altura: ALTURA_PAREDE, base: 0 }, definidas(opcoes));
       const dx = x2 - x1, dz = z2 - z1, comp = Math.hypot(dx, dz);
       if (comp < 0.1) throw new Error('Parede muito curta (mínimo de 10 cm)');
 

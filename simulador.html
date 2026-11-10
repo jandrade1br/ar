@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Simulador virtual do ambiente</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #16201b; color: #fff; font: 15px/1.4 system-ui, sans-serif; }
+    canvas { display: block; touch-action: none; }
+    button, select, input[type="text"], input[type="number"], textarea { font: inherit; }
+    button { padding: 9px 12px; border: 0; border-radius: 8px; background: #5fd49a; color: #06241a; cursor: pointer; }
+    button.sec { background: transparent; color: #5fd49a; border: 1px solid #5fd49a; }
+    button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+    #bMenu { position: fixed; top: 8px; left: 8px; z-index: 12; }
+    #painel { position: fixed; top: 0; left: 0; bottom: 0; width: min(23rem, 92vw); overflow-y: auto; z-index: 11;
+              box-sizing: border-box; padding: 54px 12px 16px; background: rgba(12,20,16,.94); }
+    #painel details { margin-bottom: 10px; border: 1px solid #2c3a31; border-radius: 10px; padding: 6px 10px; }
+    #painel summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+    #painel label { display: block; margin: 8px 0 3px; font-size: .9rem; }
+    #painel .linha { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+    #painel .linha > * { flex: 1 1 auto; }
+    #painel select, #painel input[type="text"], #painel input[type="number"] {
+      width: 100%; box-sizing: border-box; padding: 8px; border: 0; border-radius: 8px; background: #fff; color: #111; }
+    #painel textarea { width: 100%; box-sizing: border-box; height: 9rem; background: #0b1710; color: #cfe;
+                       border: 1px solid #2c3a31; border-radius: 8px; padding: 8px; font: 12px ui-monospace, monospace; }
+    #painel p { font-size: .85rem; opacity: .85; margin: 6px 0; }
+    #painel label.arquivo { display: inline-block; padding: 9px 12px; border: 1px solid #5fd49a; border-radius: 8px; color: #5fd49a; cursor: pointer; margin: 6px 6px 0 0; }
+    #hud { position: fixed; left: 0; right: 0; bottom: 0; padding: 6px 12px; background: rgba(0,0,0,.65); font-size: 13px; z-index: 5; pointer-events: none; }
+    #pad { position: fixed; right: 12px; bottom: 56px; display: grid; grid-template-columns: repeat(3, 52px); grid-template-rows: repeat(2, 52px); gap: 6px; z-index: 6; }
+    #pad button { padding: 0; font-size: 20px; background: rgba(95,212,154,.85); touch-action: none; user-select: none; }
+    #pad .vazio { visibility: hidden; }
+  </style>
+</head>
+<body>
+  <button id="bMenu" type="button" aria-expanded="true" aria-controls="painel">☰ Painel</button>
+
+  <div id="painel">
+    <details open>
+      <summary>Ambiente</summary>
+      <p>Carregue um modelo 3D (GLB) ou as paredes da planta baixa (JSON). Sem arquivo, é usado um ambiente de exemplo.</p>
+      <label class="arquivo" for="fileGlb">Modelo GLB…</label>
+      <input id="fileGlb" type="file" accept=".glb" hidden>
+      <label class="arquivo" for="fileJson">Paredes (JSON)…</label>
+      <input id="fileJson" type="file" accept=".json,application/json" hidden>
+      <div class="linha"><button id="bBaixarModelo" class="sec" type="button">Baixar JSON de exemplo</button></div>
+    </details>
+
+    <details open>
+      <summary>Partida da sessão de AR</summary>
+      <p>Caminhe até o ponto onde o usuário iniciaria a AR (olhando na direção correta) e toque em "Definir partida". O cone verde no piso mostra a pose de partida.</p>
+      <div class="linha"><button id="bPartida" type="button">Definir partida aqui</button></div>
+      <p>Erro de partida (simula iniciar a AR fora do ponto ou da direção previstos):</p>
+      <div class="linha">
+        <div><label for="erroX">x (cm)</label><input id="erroX" type="number" value="0" step="5"></div>
+        <div><label for="erroZ">z (cm)</label><input id="erroZ" type="number" value="0" step="5"></div>
+        <div><label for="erroYaw">giro (°)</label><input id="erroYaw" type="number" value="0" step="1"></div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Visualização</summary>
+      <div class="linha">
+        <button id="bOclusao" class="sec" type="button"></button>
+        <button id="bParedes" class="sec" type="button"></button>
+      </div>
+      <p><strong>Só pelas paredes virtuais</strong> reproduz o aplicativo: o ambiente faz o papel da câmera e apenas as paredes de <code>paredes</code> escondem objetos. <strong>Pelo modelo</strong> mostra o que seria escondido por paredes perfeitas.</p>
+    </details>
+
+    <details open>
+      <summary>Colocar objetos com cliques</summary>
+      <label for="selFerramenta">Ferramenta (clique no piso)</label>
+      <select id="selFerramenta">
+        <option value="nenhuma">Nenhuma (apenas navegar)</option>
+        <option value="pontos">Ponto (marcador)</option>
+        <option value="placas">Placa de texto</option>
+        <option value="midias">Mídia (imagem ou modelo 3D)</option>
+        <option value="paredes">Parede virtual (dois cliques)</option>
+      </select>
+      <label for="txtNome">Nome do ponto / texto da placa / legenda da mídia</label>
+      <input id="txtNome" type="text" value="Olá, AR!">
+      <label for="txtMidia">Arquivo da mídia (png, jpg, webp, glb, gltf)</label>
+      <input id="txtMidia" type="text" value="data/exemplo.png">
+      <label for="numAltura">Altura das paredes virtuais (m)</label>
+      <input id="numAltura" type="number" value="2.6" step="0.1" min="0.5">
+      <div class="linha"><button id="bDesfazer" class="sec" type="button">Desfazer</button><button id="bZerar" class="sec" type="button">Zerar objetos</button></div>
+    </details>
+
+    <details>
+      <summary>Configuração (coordenadas da sessão)</summary>
+      <p>Mesmas listas do <code>indoor-xr.html</code>: <code>pontos</code> (PONTOS_FIXOS), <code>placas</code> (PLACAS_FIXAS), <code>midias</code> (MIDIAS_FIXAS) e <code>paredes</code> (PAREDES_FIXAS). Unidades em metros; x à direita, z para trás, relativos à partida.</p>
+      <textarea id="txtJson" spellcheck="false" aria-label="Configuração em JSON"></textarea>
+      <div class="linha"><button id="bAplicar" type="button">Aplicar JSON</button><button id="bCodigo" class="sec" type="button">Copiar como código</button></div>
+      <textarea id="txtCodigo" spellcheck="false" readonly hidden aria-label="Código para colar no indoor-xr.html"></textarea>
+    </details>
+
+    <details>
+      <summary>Controles</summary>
+      <p>Teclado: W A S D ou setas movem; Q e E giram; Shift corre. Mouse ou toque: arraste para olhar. Com uma ferramenta ativa, um clique simples no piso coloca o objeto.</p>
+    </details>
+  </div>
+
+  <div id="pad" aria-label="Controles de movimento por toque">
+    <span class="vazio"></span><button type="button" data-f="1" data-r="0" aria-label="Avançar">▲</button><span class="vazio"></span>
+    <button type="button" data-f="0" data-r="-1" aria-label="Esquerda">◀</button>
+    <button type="button" data-f="-1" data-r="0" aria-label="Recuar">▼</button>
+    <button type="button" data-f="0" data-r="1" aria-label="Direita">▶</button>
+  </div>
+  <div id="hud" aria-live="polite"></div>
+
+  <script type="module">
+    import * as THREE from './lib/three.module.min.js';
+    import { GLTFLoader } from './lib/GLTFLoader.js';
+    import { criarMarcador, criarPlaca, criarPlacaMidia, criarParede, descartar, limparGrupo } from './lib/objetos-ar.js';
+    import { construirAmbiente, mundoParaLocal, colidir } from './lib/simulador-nucleo.js';
+
+    const $ = id => document.getElementById(id);
+    const DEG = Math.PI / 180, ALTURA_OLHOS = 1.5, EIXO_Y = new THREE.Vector3(0, 1, 0);
+    const CORES = ['#3aa0e0', '#f2c230', '#e0453a', '#5fd49a', '#b06cf0'];
+    THREE.Cache.enabled = true;
+
+    // Ambiente de exemplo (mesmo conteúdo de data/ambiente-exemplo.json)
+    const AMBIENTE_EXEMPLO = {
+      nome: 'Exemplo: duas salas ligadas por uma porta', altura: 2.8, espessura: 0.12,
+      paredes: [
+        { x1: 0, z1: 0, x2: 10, z2: 0 }, { x1: 10, z1: 0, x2: 10, z2: 5 },
+        { x1: 10, z1: 5, x2: 0, z2: 5 }, { x1: 0, z1: 5, x2: 0, z2: 0 },
+        { x1: 6, z1: 0, x2: 6, z2: 2 }, { x1: 6, z1: 3.2, x2: 6, z2: 5 }
+      ]
+    };
+
+    // ---------- Estado ----------
+    let partida = { x: 1, y: 0, z: 2.5, yaw: -Math.PI / 2 };   // pose onde a sessão de AR começa (mundo do modelo)
+    const erro = { x: 0, z: 0, yaw: 0 };                        // diferença entre a partida prevista e a real
+    let ambiente = { grupo: null, segmentos: [], limites: null };
+    let oclusao = 'virtual';                                    // 'virtual' ou 'modelo'
+    let paredesVisiveis = true;
+    let ferramenta = 'nenhuma';
+    let pendente = null;                                        // primeiro clique de uma parede
+    const historico = [];
+    let avisoTexto = '', avisoAte = 0;
+    function avisar(t) { avisoTexto = t; avisoAte = performance.now() + 4000; }
+
+    let config = {
+      pontos: [
+        { nome: 'Entrada', x: 0,  z: -1.5, cor: '#3aa0e0' },
+        { nome: 'Sala A',  x: 2,  z: -3.0, cor: '#f2c230' },
+        { nome: 'Sala B',  x: -2, z: -3.0, cor: '#e0453a' }
+      ],
+      placas: [
+        { texto: 'Bem-vindo!\nSiga em frente até a Sala A', x: 0, z: -2.5, altura: 1.7, cor: '#1f6f4a' },
+        { texto: 'Saída', x: -1, z: 0.5, altura: 2.0, cor: '#a32a2a' }
+      ],
+      midias: [
+        { fonte: 'data/exemplo.png', x: 1.2,  z: -2.0, altura: 1.5, largura: 0.7, legenda: 'Imagem PNG' },
+        { fonte: 'data/exemplo.glb', x: -1.2, z: -2.0, altura: 1.2, tamanho: 0.45, legenda: 'Modelo 3D' }
+      ],
+      paredes: []
+    };
+
+    // ---------- Cenas ----------
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.autoClear = false;
+    renderer.setClearColor(0x16201b);
+    document.body.prepend(renderer.domElement);
+
+    const cenaAmbiente = new THREE.Scene();    // faz o papel da imagem da câmera
+    const cenaVirtual = new THREE.Scene();     // camada de AR: objetos e paredes virtuais
+    [cenaAmbiente, cenaVirtual].forEach(c => {
+      c.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.3));
+      const l = new THREE.DirectionalLight(0xffffff, 0.8); l.position.set(1, 3, 2); c.add(l);
+    });
+    const raizAR = new THREE.Group();
+    cenaVirtual.add(raizAR);
+
+    const marcaPartida = new THREE.Group();
+    marcaPartida.add(new THREE.Mesh(new THREE.RingGeometry(0.18, 0.24, 32).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0x5fd49a })));
+    const seta = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.3, 16).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0x5fd49a }));
+    seta.position.set(0, 0.02, -0.4);
+    marcaPartida.add(seta);
+    cenaAmbiente.add(marcaPartida);
+
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 200);
+    let pos = new THREE.Vector3(partida.x, ALTURA_OLHOS, partida.z), yaw = partida.yaw, pitch = 0;
+
+    // ---------- Ambiente ----------
+    function usarAmbiente(novo, pisoY) {
+      if (ambiente.grupo) { cenaAmbiente.remove(ambiente.grupo); descartar(ambiente.grupo); }
+      ambiente = novo;
+      cenaAmbiente.add(ambiente.grupo);
+      partida.y = pisoY;
+    }
+    function posicionarNoCentro() {
+      const c = ambiente.limites.getCenter(new THREE.Vector3());
+      pos.set(c.x, partida.y + ALTURA_OLHOS, c.z);
+      partida.x = c.x; partida.z = c.z; partida.yaw = yaw;
+      reconstruir();
+    }
+    function carregarGlb(arquivo) {
+      const url = URL.createObjectURL(arquivo);
+      new GLTFLoader().load(url, gltf => {
+        URL.revokeObjectURL(url);
+        const caixa = new THREE.Box3().setFromObject(gltf.scene);
+        usarAmbiente({ grupo: gltf.scene, segmentos: [], limites: caixa }, +caixa.min.y.toFixed(2));
+        posicionarNoCentro();
+        avisar('Modelo carregado. Sem colisão com paredes neste modo.');
+      }, undefined, () => avisar('Não foi possível ler o arquivo GLB.'));
+    }
+    async function carregarJson(arquivo) {
+      try {
+        const amb = construirAmbiente(JSON.parse(await arquivo.text()));
+        usarAmbiente(amb, 0);
+        posicionarNoCentro();
+        avisar('Planta carregada: ' + amb.segmentos.length + ' paredes.');
+      } catch (e) { avisar('JSON inválido: ' + e.message); }
+    }
+
+    // ---------- Objetos ----------
+    function reconstruir() {
+      limparGrupo(raizAR);
+      config.pontos.forEach(p => {
+        const m = criarMarcador(p.nome, p.cor || '#3aa0e0');
+        m.position.set(p.x, 0, p.z);
+        raizAR.add(m);
+      });
+      config.placas.forEach(p => {
+        const g = criarPlaca(p.texto, { altura: p.altura, cor: p.cor, largura: p.largura });
+        g.position.set(p.x, 0, p.z);
+        raizAR.add(g);
+      });
+      config.midias.forEach(m => {
+        try { const g = criarPlacaMidia(m.fonte, m); g.position.set(m.x, 0, m.z); raizAR.add(g); }
+        catch (e) { avisar(e.message); }
+      });
+      config.paredes.forEach(p => {
+        try { raizAR.add(criarParede(p.x1, p.z1, p.x2, p.z2, { altura: p.altura, base: 0 })); }
+        catch (e) { avisar(e.message); }
+      });
+      aplicarPose();
+      aplicarVisibilidadeParedes();
+      atualizarJson();
+    }
+    function aplicarPose() {
+      const desloc = new THREE.Vector3(erro.x / 100, 0, erro.z / 100).applyAxisAngle(EIXO_Y, partida.yaw);
+      raizAR.position.set(partida.x + desloc.x, partida.y, partida.z + desloc.z);
+      raizAR.rotation.set(0, partida.yaw + erro.yaw * DEG, 0);
+      marcaPartida.position.set(partida.x, partida.y + 0.02, partida.z);
+      marcaPartida.rotation.set(0, partida.yaw, 0);
+    }
+    function aplicarVisibilidadeParedes() {
+      raizAR.children.forEach(g => { if (g.userData.visual) g.userData.visual.visible = paredesVisiveis; });
+      $('bParedes').textContent = 'Paredes virtuais: ' + (paredesVisiveis ? 'visíveis' : 'ocultas');
+      $('bOclusao').textContent = 'Oclusão: ' + (oclusao === 'virtual' ? 'só paredes virtuais' : 'pelo modelo');
+    }
+    function atualizarJson() { $('txtJson').value = JSON.stringify(config, null, 2); }
+
+    // Paredes virtuais iniciais = paredes do ambiente de exemplo, em coordenadas da sessão
+    function paredesDoAmbienteEmLocal(segs) {
+      const r = n => +n.toFixed(2);
+      return segs.map(s => {
+        const a = mundoParaLocal(partida, new THREE.Vector3(s.x1, 0, s.z1));
+        const b = mundoParaLocal(partida, new THREE.Vector3(s.x2, 0, s.z2));
+        return { x1: r(a.x), z1: r(a.z), x2: r(b.x), z2: r(b.z), altura: 2.8 };
+      });
+    }
+
+    // ---------- Orientação dos objetos para o usuário ----------
+    const w = new THREE.Vector3();
+    function girar(g) {
+      g.getWorldPosition(w);
+      g.rotation.y = Math.atan2(camera.position.x - w.x, camera.position.z - w.z) - raizAR.rotation.y;
+    }
+    function atualizarObjeto(g, dt) {
+      if (g.userData.placa) { girar(g); return; }
+      if (!g.userData.midia) return;
+      if (g.userData.olharParaUsuario) girar(g); else if (g.userData.legenda) girar(g.userData.legenda);
+      if (g.userData.quadro) g.userData.quadro(dt);
+    }
+
+    // ---------- Navegação ----------
+    const teclas = new Set();
+    const pad = { f: 0, r: 0 };
+    window.addEventListener('keydown', e => { if (!/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) teclas.add(e.code); });
+    window.addEventListener('keyup', e => teclas.delete(e.code));
+    document.querySelectorAll('#pad button').forEach(b => {
+      const liga = e => { e.preventDefault(); pad.f = +b.dataset.f; pad.r = +b.dataset.r; };
+      const desliga = () => { pad.f = 0; pad.r = 0; };
+      b.addEventListener('pointerdown', liga);
+      ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, desliga));
+    });
+
+    function mover(dt) {
+      const vel = (teclas.has('ShiftLeft') || teclas.has('ShiftRight')) ? 4 : 2;
+      let f = pad.f, r = pad.r;
+      if (teclas.has('KeyW') || teclas.has('ArrowUp')) f += 1;
+      if (teclas.has('KeyS') || teclas.has('ArrowDown')) f -= 1;
+      if (teclas.has('KeyD') || teclas.has('ArrowRight')) r += 1;
+      if (teclas.has('KeyA') || teclas.has('ArrowLeft')) r -= 1;
+      if (teclas.has('KeyQ')) yaw += 1.5 * dt;
+      if (teclas.has('KeyE')) yaw -= 1.5 * dt;
+      let nx = pos.x + (-Math.sin(yaw) * f + Math.cos(yaw) * r) * vel * dt;
+      let nz = pos.z + (-Math.cos(yaw) * f - Math.sin(yaw) * r) * vel * dt;
+      if (ambiente.segmentos.length) ({ x: nx, z: nz } = colidir({ x: nx, z: nz }, ambiente.segmentos, 0.25));
+      pos.set(nx, partida.y + ALTURA_OLHOS, nz);
+      camera.position.copy(pos);
+      camera.rotation.set(pitch, yaw, 0, 'YXZ');
+    }
+
+    // ---------- Mouse / toque: olhar e clicar ----------
+    const dom = renderer.domElement;
+    let arrasto = null;
+    dom.addEventListener('pointerdown', e => { dom.setPointerCapture(e.pointerId); arrasto = { x: e.clientX, y: e.clientY, mov: 0 }; });
+    dom.addEventListener('pointermove', e => {
+      if (!arrasto) return;
+      const dx = e.clientX - arrasto.x, dy = e.clientY - arrasto.y;
+      arrasto.x = e.clientX; arrasto.y = e.clientY; arrasto.mov += Math.abs(dx) + Math.abs(dy);
+      yaw -= dx * 0.004;
+      pitch = Math.max(-1.3, Math.min(1.3, pitch - dy * 0.004));
+    });
+    dom.addEventListener('pointerup', e => {
+      if (arrasto && arrasto.mov < 8 && ferramenta !== 'nenhuma') clicar(e.clientX, e.clientY);
+      arrasto = null;
+    });
+
+    const raio = new THREE.Raycaster();
+    function clicar(cx, cy) {
+      raio.setFromCamera(new THREE.Vector2((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1), camera);
+      const alvo = new THREE.Vector3();
+      if (!raio.ray.intersectPlane(new THREE.Plane(EIXO_Y, -partida.y), alvo)) { avisar('Aponte para o piso.'); return; }
+      const l = mundoParaLocal(partida, alvo);
+      const x = +l.x.toFixed(2), z = +l.z.toFixed(2);
+
+      if (ferramenta === 'pontos') {
+        const n = config.pontos.length + 1;
+        config.pontos.push({ nome: $('txtNome').value.trim() || 'Ponto ' + n, x, z, cor: CORES[(n - 1) % CORES.length] });
+      } else if (ferramenta === 'placas') {
+        config.placas.push({ texto: $('txtNome').value.trim() || 'Placa', x, z, altura: 1.7, cor: '#1f6f4a' });
+      } else if (ferramenta === 'midias') {
+        const fonte = $('txtMidia').value.trim();
+        if (!/\.(png|jpe?g|webp|glb|gltf)([?#].*)?$/i.test(fonte)) { avisar('Formato não suportado (use png, jpg, webp, glb ou gltf).'); return; }
+        config.midias.push({ fonte, x, z, legenda: $('txtNome').value.trim() });
+      } else if (ferramenta === 'paredes') {
+        if (!pendente) {
+          const marca = new THREE.Mesh(new THREE.SphereGeometry(0.06, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff4444 }));
+          marca.position.copy(alvo); cenaAmbiente.add(marca);
+          pendente = { x, z, marca };
+          return;
+        }
+        const altura = parseFloat($('numAltura').value) || 2.6;
+        config.paredes.push({ x1: pendente.x, z1: pendente.z, x2: x, z2: z, altura });
+        cancelarPendente();
+      } else return;
+
+      historico.push(ferramenta);
+      reconstruir();
+    }
+    function cancelarPendente() {
+      if (!pendente) return;
+      cenaAmbiente.remove(pendente.marca); descartar(pendente.marca); pendente = null;
+    }
+
+    // ---------- Painel ----------
+    $('bMenu').addEventListener('click', () => {
+      const p = $('painel'); const aberto = p.style.display !== 'none';
+      p.style.display = aberto ? 'none' : 'block';
+      $('bMenu').setAttribute('aria-expanded', String(!aberto));
+    });
+    $('fileGlb').addEventListener('change', e => { if (e.target.files[0]) carregarGlb(e.target.files[0]); e.target.value = ''; });
+    $('fileJson').addEventListener('change', e => { if (e.target.files[0]) carregarJson(e.target.files[0]); e.target.value = ''; });
+    $('bBaixarModelo').addEventListener('click', () => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(AMBIENTE_EXEMPLO, null, 2)], { type: 'application/json' }));
+      a.download = 'ambiente-exemplo.json'; a.click(); URL.revokeObjectURL(a.href);
+    });
+    $('bPartida').addEventListener('click', () => {
+      partida.x = pos.x; partida.z = pos.z; partida.yaw = yaw;
+      aplicarPose(); avisar('Partida definida na posição atual.');
+    });
+    [['erroX', 'x'], ['erroZ', 'z'], ['erroYaw', 'yaw']].forEach(([id, k]) =>
+      $(id).addEventListener('input', () => { erro[k] = parseFloat($(id).value) || 0; aplicarPose(); }));
+    $('bOclusao').addEventListener('click', () => { oclusao = oclusao === 'virtual' ? 'modelo' : 'virtual'; aplicarVisibilidadeParedes(); });
+    $('bParedes').addEventListener('click', () => { paredesVisiveis = !paredesVisiveis; aplicarVisibilidadeParedes(); });
+    $('selFerramenta').addEventListener('change', e => { ferramenta = e.target.value; cancelarPendente(); });
+    $('bDesfazer').addEventListener('click', () => {
+      if (pendente) { cancelarPendente(); return; }
+      const t = historico.pop();
+      if (t) { config[t].pop(); reconstruir(); }
+    });
+    $('bZerar').addEventListener('click', () => {
+      config = { pontos: [], placas: [], midias: [], paredes: [] }; historico.length = 0; cancelarPendente(); reconstruir();
+    });
+    $('bAplicar').addEventListener('click', () => {
+      try {
+        const j = JSON.parse($('txtJson').value);
+        config = { pontos: j.pontos || [], placas: j.placas || [], midias: j.midias || [], paredes: j.paredes || [] };
+        historico.length = 0; reconstruir(); avisar('Configuração aplicada.');
+      } catch (e) { avisar('JSON inválido: ' + e.message); }
+    });
+    $('bCodigo').addEventListener('click', async () => {
+      const bloco = (nome, lista) => 'const ' + nome + ' = ' + JSON.stringify(lista, null, 2) + ';';
+      const texto = [bloco('PONTOS_FIXOS', config.pontos), bloco('PLACAS_FIXAS', config.placas),
+                     bloco('MIDIAS_FIXAS', config.midias), bloco('PAREDES_FIXAS', config.paredes)].join('\n\n');
+      const t = $('txtCodigo'); t.value = texto; t.hidden = false; t.select();
+      try { await navigator.clipboard.writeText(texto); avisar('Código copiado.'); }
+      catch (e) { avisar('Selecione o texto e copie manualmente.'); }
+    });
+
+    // ---------- Laço principal ----------
+    const relogio = new THREE.Clock();
+    let quadros = 0;
+    renderer.setAnimationLoop(() => {
+      const dt = Math.min(relogio.getDelta(), 0.1);
+      mover(dt);
+      raizAR.children.forEach(g => atualizarObjeto(g, dt));
+
+      renderer.clear();
+      renderer.render(cenaAmbiente, camera);
+      if (oclusao === 'virtual') renderer.clearDepth();      // objetos não "enxergam" a profundidade do ambiente
+      renderer.render(cenaVirtual, camera);
+
+      if (++quadros % 10 === 0) {
+        const l = mundoParaLocal(partida, new THREE.Vector3(pos.x, partida.y, pos.z));
+        let rel = ((yaw - partida.yaw) / DEG + 540) % 360 - 180;
+        let txt = `Modelo (x, z): ${pos.x.toFixed(2)}, ${pos.z.toFixed(2)} · Sessão (x, z): ${l.x.toFixed(2)}, ${l.z.toFixed(2)} · Giro em relação à partida: ${Math.round(rel)}°`;
+        if (pendente) txt = 'Parede: clique na outra extremidade · ' + txt;
+        if (performance.now() < avisoAte) txt = avisoTexto + ' · ' + txt;
+        $('hud').textContent = txt;
+      }
+    });
+    window.addEventListener('resize', () => {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+    });
+
+    // ---------- Início ----------
+    usarAmbiente(construirAmbiente(AMBIENTE_EXEMPLO), 0);
+    config.paredes = paredesDoAmbienteEmLocal(ambiente.segmentos);
+    reconstruir();
+    avisar('Ambiente de exemplo carregado.');
+  </script>
+</body>
+</html>
