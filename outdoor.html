@@ -74,23 +74,27 @@
     const $ = id => document.getElementById(id);
     const params = new URLSearchParams(location.search);
     const RAD = Math.PI / 180;
-    let rumoAtual = null;       // direção em que a câmera traseira aponta (graus, 0 = norte)
-    let pos = null;             // última posição do GPS
-    let alvo = null;            // {lat, lon} do objeto
-    let cameraOk = false, gpsAR = false, entidades = 0;
-    let precMinNum = 0;
+    const esperar = ms => new Promise(r => setTimeout(r, ms));
 
+    let rumoAtual = null;       // direção da câmera pela bússola do navegador (graus, 0 = norte)
+    let pos = null;             // última posição do GPS {lat, lon, prec}
+    let posInicial = null;      // posição ao iniciar (referência do objeto)
+    let alvo = null;            // {lat, lon} do objeto
+    let modoFixo = false;       // true quando o ponto vem da URL (?lat=&lon=)
+    let precMinNum = 0, primeiroFeed = false;
+
+    function estado(t) { $('estado').textContent = t; }
+
+    // ---------- Erros (visíveis no painel e persistentes) ----------
     function registrarErro(m) {
       m = String(m || '');
       if (/message channel closed|Extension context|chrome-extension/i.test(m)) return;
-      $('err').textContent = 'Último erro: ' + m.slice(0, 160);
+      $('err').textContent = 'Último erro: ' + m.slice(0, 180);
     }
     window.addEventListener('error', e => registrarErro(e.message));
     window.addEventListener('unhandledrejection', e => registrarErro(e.reason && e.reason.message || e.reason));
     const consoleErroOriginal = console.error;
     console.error = (...args) => { registrarErro(args.join(' ')); consoleErroOriginal.apply(console, args); };
-
-    function estado(t) { $('estado').textContent = t; }
 
     // ---------- Geometria ----------
     function distancia(a, b) {                       // haversine, em metros
@@ -111,7 +115,7 @@
       };
     }
 
-    // ---------- Bússola (direção da câmera traseira) ----------
+    // ---------- Bússola do navegador (usada no painel e como reserva) ----------
     function rumoDaCamera(alpha, beta, gamma) {      // fórmula do W3C (DeviceOrientation)
       const x = (beta || 0) * RAD, y = (gamma || 0) * RAD, z = (alpha || 0) * RAD;
       const cY = Math.cos(y), cZ = Math.cos(z), sX = Math.sin(x), sY = Math.sin(y), sZ = Math.sin(z);
@@ -127,6 +131,33 @@
         const g = rumoDaCamera(e.alpha, e.beta, e.gamma);   // indefinido com o celular deitado
         if (Number.isFinite(g)) rumoAtual = g;
       }
+    }
+
+    // ---------- Acesso aos componentes do AR.js ----------
+    const camEl = () => document.querySelector('a-camera');
+    const compGps = () => { const c = camEl(); return c && c.components && c.components['gps-new-camera']; };
+    const compOri = () => { const c = camEl(); return c && c.components && c.components['arjs-device-orientation-controls']; };
+
+    function orientacaoRecebida() {                  // o AR.js já recebeu leituras do sensor?
+      const o = compOri(), d = o && o._orientationControls && o._orientationControls.deviceOrientation;
+      return !!(d && d.alpha !== undefined && d.alpha !== null);
+    }
+    // Direção para onde a câmera do próprio AR.js aponta (0 = norte). É a referência usada para colocar o objeto.
+    function rumoDoARjs() {
+      const c = camEl() && camEl().getObject3D('camera');
+      if (!c) return null;
+      const v = c.getWorldDirection(new AFRAME.THREE.Vector3());
+      if (Math.hypot(v.x, v.z) < 0.35) return null;  // celular quase deitado: direção indefinida
+      return (Math.atan2(v.x, -v.z) / RAD + 360) % 360;
+    }
+
+    // Entrega a posição ao AR.js. O monitor de GPS interno do AR.js é desligado (veja montar),
+    // então a câmera só se move quando recebe a posição por aqui.
+    function alimentarARjs(p, forcar) {
+      const comp = compGps();
+      if (!comp || !p) return;
+      const limite = modoFixo ? precMinNum : Math.min(precMinNum, 50);
+      if (forcar || p.prec <= limite) comp.threeLoc.fakeGps(p.lon, p.lat);
     }
 
     // ---------- GPS ----------
@@ -146,95 +177,122 @@
       window.addEventListener(eventoOri, aoOrientar, true);
       $('inicio').style.display = 'none';
       $('hud').style.display = 'block';
-      estado('Obtendo GPS e bússola…');
+      estado('Obtendo GPS…');
 
       try { pos = await obterPosicao(); }
       catch (e) { estado('GPS indisponível: ' + e.message + '. Ative a localização e use HTTPS.'); return; }
+      posInicial = Object.assign({}, pos);
+      modoFixo = params.has('lat') && params.has('lon');
+      precMinNum = Number($('selPrec').value);
+
       navigator.geolocation.watchPosition(
-        p => { pos = { lat: p.coords.latitude, lon: p.coords.longitude, prec: p.coords.accuracy }; },
-        () => {}, { enableHighAccuracy: true });
+        p => {
+          pos = { lat: p.coords.latitude, lon: p.coords.longitude, prec: p.coords.accuracy };
+          if (primeiroFeed) alimentarARjs(pos, false);
+        },
+        e => registrarErro('GPS: ' + e.message), { enableHighAccuracy: true });
 
-      for (let i = 0; i < 10 && rumoAtual === null; i++) await new Promise(r => setTimeout(r, 200));
-
-      const dist = Number($('selDist').value);
-      let aviso = '';
-      if (params.has('lat') && params.has('lon')) {
-        alvo = { lat: parseFloat(params.get('lat')), lon: parseFloat(params.get('lon')) };
-        aviso = 'Ponto fixo definido pela URL.';
-      } else {
-        let graus = 0;
-        if ($('selModo').value === 'frente') {
-          if (rumoAtual !== null) graus = rumoAtual;
-          else aviso = 'Bússola indisponível: objeto colocado ao norte. ';
-        }
-        alvo = deslocar(pos, dist, graus);
-      }
-      criarCena($('selPrec').value, $('chkTeste').checked);
-      estado(aviso + 'Câmera iniciando…');
+      criarCena($('chkTeste').checked);
       setInterval(atualizarPainel, 500);
     });
 
-    function criarCena(precMin, teste) {
-      precMinNum = Number(precMin);
-      // Primeiro só a câmera GPS. O AR.js exige que ela esteja inicializada antes dos objetos,
-      // e ela não pode ter elementos filhos durante a inicialização.
+    function criarCena(teste) {
+      // Primeiro só a câmera GPS, vazia. Os objetos são criados depois (ordem exigida pelo AR.js).
       document.body.insertAdjacentHTML('beforeend', `
         <a-scene vr-mode-ui="enabled: false"
                  arjs="sourceType: webcam; videoTexture: true; debugUIEnabled: false"
                  renderer="antialias: true; alpha: true">
-          <a-camera gps-new-camera="gpsMinDistance: 5; positionMinAccuracy: ${precMin}"></a-camera>
+          <a-camera gps-new-camera="gpsMinDistance: 5; positionMinAccuracy: 100000"></a-camera>
         </a-scene>`);
-
       const cena = document.querySelector('a-scene');
-      const montar = () => {
-        const camera = document.querySelector('a-camera');
-        cena.insertAdjacentHTML('beforeend', `
-          <a-entity id="ponto" geometry="primitive: box" material="color: #e0453a" scale="6 6 6"
-                    gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}"></a-entity>
-          <a-text value="Ponto A" align="center" color="#ffffff" width="30" look-at="[gps-new-camera]"
-                  gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}" position="0 7 0"></a-text>`);
-        if (teste) {
-          camera.insertAdjacentHTML('beforeend',
-            '<a-box position="0 -0.3 -2" scale="0.3 0.3 0.3" material="color: #3ae05f"></a-box>');
-        }
-      };
-      if (cena.hasLoaded) montar(); else cena.addEventListener('loaded', montar, { once: true });
+      const iniciar = () => montar(cena, teste).catch(e => registrarErro('montar: ' + (e && e.message || e)));
+      if (cena.hasLoaded) iniciar(); else cena.addEventListener('loaded', iniciar, { once: true });
     }
 
+    async function montar(cena, teste) {
+      for (let i = 0; i < 30 && !compGps(); i++) await esperar(100);
+      const comp = compGps();
+      if (!comp) { registrarErro('O componente gps-new-camera não foi inicializado.'); return; }
+
+      // Desliga o monitor de GPS do AR.js (ele descarta leituras acima do limite de precisão e pode falhar
+      // em silêncio) e passa a alimentá-lo com a leitura própria.
+      comp.threeLoc.stopGps();
+      comp.threeLoc.startGps = () => false;
+      alimentarARjs(modoFixo ? pos : posInicial, true);
+      primeiroFeed = true;
+
+      if (teste) {
+        camEl().insertAdjacentHTML('beforeend',
+          '<a-box position="0 -0.3 -2" scale="0.3 0.3 0.3" material="color: #3ae05f"></a-box>');
+      }
+
+      // Define onde fica o objeto
+      let origem = '';
+      if (modoFixo) {
+        alvo = { lat: parseFloat(params.get('lat')), lon: parseFloat(params.get('lon')) };
+        origem = 'Ponto fixo da URL.';
+      } else {
+        let graus = 0;
+        origem = 'Objeto ao norte.';
+        if ($('selModo').value === 'frente') {
+          estado('Aguardando os sensores de movimento… segure o celular na vertical.');
+          for (let i = 0; i < 25 && !orientacaoRecebida(); i++) await esperar(200);
+          await esperar(300);                                   // deixa o AR.js aplicar a orientação
+          const h = rumoDoARjs();
+          if (h !== null) { graus = h; origem = 'Objeto colocado à frente, na direção da câmera do AR.js.'; }
+          else if (rumoAtual !== null) { graus = rumoAtual; origem = 'Objeto colocado pela bússola (câmera do AR.js sem direção).'; }
+          else origem = 'Sem leitura de direção: objeto colocado ao norte.';
+        }
+        alvo = deslocar(posInicial, Number($('selDist').value), graus);
+      }
+      registrarOrigem(origem);
+
+      cena.insertAdjacentHTML('beforeend', `
+        <a-entity id="ponto" geometry="primitive: box" material="color: #e0453a" scale="6 6 6"
+                  gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}"></a-entity>
+        <a-text value="Ponto A" align="center" color="#ffffff" width="30" look-at="[gps-new-camera]"
+                gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}" position="0 7 0"></a-text>`);
+    }
+    let textoOrigem = '';
+    function registrarOrigem(t) { textoOrigem = t; }
+
     // ---------- Painel de diagnóstico ----------
-    function f(n) { return (Math.round(n * 10) / 10).toString(); }
+    const f = n => (Math.round(n * 10) / 10).toString();
 
     function atualizarPainel() {
-      if (!pos || !alvo) return;
-
-      // Estado real dos componentes (não depende de eventos)
+      if (!pos) return;
       const v = document.querySelector('video');
-      cameraOk = !!(v && v.readyState >= 2);
-      const cam = document.querySelector('[gps-new-camera]');
-      const comp = cam && cam.components && cam.components['gps-new-camera'];
-      gpsAR = !!(comp && comp._currentPosition);
-      entidades = [...document.querySelectorAll('[gps-new-entity-place]')]
-                    .filter(el => el.components && el.components['gps-new-entity-place']).length;
+      const cameraOk = !!(v && v.readyState >= 2);
+      const comp = compGps(), cam = camEl();
+      const gpsAR = !!(comp && comp._currentPosition);
+      const entidades = [...document.querySelectorAll('[gps-new-entity-place]')]
+                          .filter(el => el.components && el.components['gps-new-entity-place']).length;
       const ponto = document.getElementById('ponto');
+      const rumoAR = rumoDoARjs();
 
-      const d = distancia(pos, alvo), r = rumoPara(pos, alvo);
-      let orient = 'bússola indisponível';
-      if (rumoAtual !== null) {
-        const rel = ((r - rumoAtual + 540) % 360) - 180;       // -180..180 (positivo = à direita)
-        orient = Math.abs(rel) < 10 ? 'objeto à frente'
-               : 'vire ' + Math.round(Math.abs(rel)) + '° para a ' + (rel > 0 ? 'direita' : 'esquerda');
+      let msg = textoOrigem || 'Iniciando…';
+      if (alvo) {
+        const d = distancia(pos, alvo), r = rumoPara(pos, alvo);
+        const ref = rumoAR !== null ? rumoAR : rumoAtual;
+        let orient = 'sem direção';
+        if (ref !== null) {
+          const rel = ((r - ref + 540) % 360) - 180;       // -180..180 (positivo = à direita)
+          orient = Math.abs(rel) < 10 ? 'objeto à frente'
+                 : 'vire ' + Math.round(Math.abs(rel)) + '° para a ' + (rel > 0 ? 'direita' : 'esquerda');
+        }
+        msg = 'Objeto a ' + Math.round(d) + ' m · ' + orient;
       }
-      let msg = 'Objeto a ' + Math.round(d) + ' m · ' + orient;
-      if (cam && !gpsAR && pos.prec > precMinNum) msg = 'Precisão do GPS (±' + Math.round(pos.prec) + ' m) pior que o limite escolhido. ' + msg;
       estado(msg);
 
       let mundo = '';
-      if (cam && comp) mundo += ` · Câmera (x,z): ${f(cam.object3D.position.x)}, ${f(cam.object3D.position.z)}`;
-      if (ponto) mundo += ` · Objeto (x,z): ${f(ponto.object3D.position.x)}, ${f(ponto.object3D.position.z)}`;
+      if (cam && ponto && gpsAR) {
+        const dx = ponto.object3D.position.x - cam.object3D.position.x, dz = ponto.object3D.position.z - cam.object3D.position.z;
+        mundo = ` · No AR.js, objeto a ${Math.round(Math.hypot(dx, dz))} m`;
+      }
       $('det').textContent =
-        `GPS ±${Math.round(pos.prec)} m · Rumo da câmera ${rumoAtual === null ? '—' : Math.round(rumoAtual) + '°'}` +
-        ` · Câmera: ${cameraOk ? 'ok' : 'aguardando'} · Posição no AR.js: ${gpsAR ? 'ok' : 'aguardando'}` +
-        ` · Objetos: ${entidades}/2` + mundo;
+        `GPS ±${Math.round(pos.prec)} m · Bússola ${rumoAtual === null ? '—' : Math.round(rumoAtual) + '°'}` +
+        ` · AR.js: direção ${rumoAR === null ? '—' : Math.round(rumoAR) + '°'}, sensores ${orientacaoRecebida() ? 'ok' : 'aguardando'}` +
+        ` · Câmera ${cameraOk ? 'ok' : 'aguardando'} · Posição ${gpsAR ? 'ok' : 'aguardando'} · Objetos ${entidades}/2` + mundo;
     }
   </script>
 </body>
