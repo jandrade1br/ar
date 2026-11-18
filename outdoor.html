@@ -8,6 +8,21 @@
   <!-- Bibliotecas hospedadas localmente (pasta lib/) -->
   <script src="lib/aframe.min.js"></script>
   <script src="lib/aframe-ar-nft.js"></script>
+  <script>
+      // Criando um componente personalizado para lidar com o clique
+      AFRAME.registerComponent('acao-ao-clicar', {
+        init: function () {
+          // 'this.el' se refere à própria  onde o componente foi colocado
+          this.el.addEventListener('click', function (evt) {
+            console.log('Objeto clicado!');
+            alert('Você clicou no objeto personalizado!');
+            
+            // Exemplo extra: mudar a escala ao clicar
+            this.setAttribute('scale', '1.5 1.5 1.5');
+          });
+        }
+      });
+    </script>
 
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; font: 16px system-ui, sans-serif; }
@@ -230,7 +245,9 @@
       document.body.insertAdjacentHTML('beforeend', `
         <a-scene vr-mode-ui="enabled: false"
                  arjs="sourceType: webcam; videoTexture: true; debugUIEnabled: false"
-                 renderer="antialias: true; alpha: true">
+                 renderer="antialias: true; alpha: true"
+				 cursor="rayOrigin: mouse"
+				 raycaster="objects: .clicavel">
           <a-camera gps-new-camera="gpsMinDistance: 5; positionMinAccuracy: 100000"></a-camera>
         </a-scene>`);
       const cena = document.querySelector('a-scene');
@@ -281,12 +298,24 @@
         alvo = deslocar(posInicial, Number($('selDist').value), graus);
       }
       registrarOrigem(origem);
-
+	  /*
       cena.insertAdjacentHTML('beforeend', `
         <a-entity id="ponto" geometry="primitive: box" material="color: #e0453a" scale="6 6 6"
                   gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}"></a-entity>
-        <a-text value="Ponto A" align="center" color="#ffffff" width="30" look-at="[gps-new-camera]"
-                gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}" position="0 7 0"></a-text>`);
+        <a-text value="Theatro da Paz" align="center" color="#ffffff" width="30" look-at="[gps-new-camera]"
+                gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}" position="0 7 0"></a-text>
+		<a-image src="data/placa_teatro.png" position="0 7 0" width="2" height="2" look-at="[gps-new-camera]"
+				gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}"  material="transparent: true; alphaTest: 0.5; side: double"></a-image>`
+				);
+		*/
+				
+				
+		cena.insertAdjacentHTML('beforeend', `
+        <a-text value="Theatro da Paz" align="center" color="#ffffff" width="30" look-at="[gps-new-camera]"
+                gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}" position="0 7 0"></a-text>
+		<a-image src="data/placa_teatro.png" position="0 7 0" width="30" height="20" look-at="[gps-new-camera]"
+				gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}"  material="transparent: true; alphaTest: 0.5; side: double"></a-image>`
+				);
     }
     let textoOrigem = '';
     function registrarOrigem(t) { textoOrigem = t; }
