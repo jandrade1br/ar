@@ -115,33 +115,58 @@
       };
     }
 
-    // ---------- Bússola do navegador (usada no painel e como reserva) ----------
-    function rumoDaCamera(alpha, beta, gamma) {      // fórmula do W3C (DeviceOrientation)
+    // ---------- Sensores de orientação ----------
+    // O aplicativo lê os sensores e gira a câmera do A-Frame por conta própria (mesma matemática do AR.js).
+    // Sem leituras dos sensores a câmera não gira e o objeto parece "colado" na tela.
+    let ultimaOri = null;                            // {alpha, beta, gamma} em graus
+    let eventosOri = 0, temAbsoluto = false;
+
+    function rumoDaCamera(alpha, beta, gamma) {      // rumo da câmera traseira (fórmula do W3C)
       const x = (beta || 0) * RAD, y = (gamma || 0) * RAD, z = (alpha || 0) * RAD;
       const cY = Math.cos(y), cZ = Math.cos(z), sX = Math.sin(x), sY = Math.sin(y), sZ = Math.sin(z);
       const Vx = -cZ * sY - sZ * sX * cY, Vy = -sZ * sY + cZ * sX * cY;
-      let h = Math.atan(Vx / Vy);
-      if (Vy < 0) h += Math.PI; else if (Vx < 0) h += 2 * Math.PI;
-      return h / RAD;
+      let g = Math.atan(Vx / Vy);
+      if (Vy < 0) g += Math.PI; else if (Vx < 0) g += 2 * Math.PI;
+      return g / RAD;
     }
-    const eventoOri = 'ondeviceorientationabsolute' in window ? 'deviceorientationabsolute' : 'deviceorientation';
     function aoOrientar(e) {
+      eventosOri++;
+      const absoluto = e.type === 'deviceorientationabsolute' || e.absolute === true;
+      if (absoluto) temAbsoluto = true;
+      if (!absoluto && temAbsoluto) return;          // depois que chegam leituras absolutas, ignora as relativas
+      if (e.alpha == null && e.beta == null && e.gamma == null) return;
+      ultimaOri = { alpha: e.alpha || 0, beta: e.beta || 0, gamma: e.gamma || 0 };
       if (e.webkitCompassHeading !== undefined) rumoAtual = e.webkitCompassHeading;
-      else if (e.alpha != null && (e.absolute === true || e.absolute === undefined)) {
-        const g = rumoDaCamera(e.alpha, e.beta, e.gamma);   // indefinido com o celular deitado
+      else if (absoluto) {
+        const g = rumoDaCamera(ultimaOri.alpha, ultimaOri.beta, ultimaOri.gamma);   // indefinido com o celular deitado
         if (Number.isFinite(g)) rumoAtual = g;
       }
     }
 
+    // Gira a entidade da câmera conforme os sensores (mesma matemática do DeviceOrientationControls do three.js)
+    AFRAME.registerComponent('orientacao-propria', {
+      init() {
+        const T = AFRAME.THREE;
+        this.euler = new T.Euler(); this.q0 = new T.Quaternion();
+        this.q1 = new T.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); this.eixoZ = new T.Vector3(0, 0, 1);
+      },
+      tick() {
+        if (!ultimaOri) return;
+        const tela = (screen.orientation && typeof screen.orientation.angle === 'number')
+                       ? screen.orientation.angle : (window.orientation || 0);
+        this.euler.set(ultimaOri.beta * RAD, ultimaOri.alpha * RAD, -ultimaOri.gamma * RAD, 'YXZ');
+        const q = this.el.object3D.quaternion;
+        q.setFromEuler(this.euler);
+        q.multiply(this.q1);
+        q.multiply(this.q0.setFromAxisAngle(this.eixoZ, -tela * RAD));
+      }
+    });
+
     // ---------- Acesso aos componentes do AR.js ----------
     const camEl = () => document.querySelector('a-camera');
     const compGps = () => { const c = camEl(); return c && c.components && c.components['gps-new-camera']; };
-    const compOri = () => { const c = camEl(); return c && c.components && c.components['arjs-device-orientation-controls']; };
 
-    function orientacaoRecebida() {                  // o AR.js já recebeu leituras do sensor?
-      const o = compOri(), d = o && o._orientationControls && o._orientationControls.deviceOrientation;
-      return !!(d && d.alpha !== undefined && d.alpha !== null);
-    }
+    const orientacaoRecebida = () => ultimaOri !== null;      // os sensores já enviaram leituras?
     // Direção para onde a câmera do próprio AR.js aponta (0 = norte). É a referência usada para colocar o objeto.
     function rumoDoARjs() {
       const c = camEl() && camEl().getObject3D('camera');
@@ -174,7 +199,8 @@
           typeof DeviceOrientationEvent.requestPermission === 'function') {
         try { await DeviceOrientationEvent.requestPermission(); } catch (e) { /* segue sem bússola */ }
       }
-      window.addEventListener(eventoOri, aoOrientar, true);
+      window.addEventListener('deviceorientationabsolute', aoOrientar, true);
+      window.addEventListener('deviceorientation', aoOrientar, true);
       $('inicio').style.display = 'none';
       $('hud').style.display = 'block';
       estado('Obtendo GPS…');
@@ -194,6 +220,9 @@
 
       criarCena($('chkTeste').checked);
       setInterval(atualizarPainel, 500);
+      setTimeout(() => {
+        if (!eventosOri) registrarErro('Os sensores de movimento não enviaram dados. Permita "Sensores de movimento" nas configurações do site e recarregue a página.');
+      }, 3000);
     });
 
     function criarCena(teste) {
@@ -218,6 +247,12 @@
       // em silêncio) e passa a alimentá-lo com a leitura própria.
       comp.threeLoc.stopGps();
       comp.threeLoc.startGps = () => false;
+
+      // A câmera passa a ser girada pelo controle de orientação deste aplicativo
+      const cam = camEl();
+      cam.removeAttribute('arjs-device-orientation-controls');
+      cam.setAttribute('look-controls', 'enabled', false);
+      cam.setAttribute('orientacao-propria', '');
       alimentarARjs(modoFixo ? pos : posInicial, true);
       primeiroFeed = true;
 
@@ -237,11 +272,11 @@
         if ($('selModo').value === 'frente') {
           estado('Aguardando os sensores de movimento… segure o celular na vertical.');
           for (let i = 0; i < 25 && !orientacaoRecebida(); i++) await esperar(200);
-          await esperar(300);                                   // deixa o AR.js aplicar a orientação
-          const h = rumoDoARjs();
-          if (h !== null) { graus = h; origem = 'Objeto colocado à frente, na direção da câmera do AR.js.'; }
-          else if (rumoAtual !== null) { graus = rumoAtual; origem = 'Objeto colocado pela bússola (câmera do AR.js sem direção).'; }
-          else origem = 'Sem leitura de direção: objeto colocado ao norte.';
+          await esperar(300);                                   // deixa a câmera receber a orientação
+          const h = orientacaoRecebida() ? rumoDoARjs() : null;
+          if (h !== null) { graus = h; origem = 'Objeto colocado à frente, na direção da câmera.'; }
+          else if (!orientacaoRecebida()) origem = 'Os sensores não enviaram dados: objeto colocado ao norte e a câmera não vai girar.';
+          else origem = 'Celular na horizontal ou sem direção: objeto colocado ao norte. Segure na vertical e reinicie.';
         }
         alvo = deslocar(posInicial, Number($('selDist').value), graus);
       }
@@ -291,7 +326,8 @@
       }
       $('det').textContent =
         `GPS ±${Math.round(pos.prec)} m · Bússola ${rumoAtual === null ? '—' : Math.round(rumoAtual) + '°'}` +
-        ` · AR.js: direção ${rumoAR === null ? '—' : Math.round(rumoAR) + '°'}, sensores ${orientacaoRecebida() ? 'ok' : 'aguardando'}` +
+        ` · Câmera 3D: direção ${rumoAR === null ? '—' : Math.round(rumoAR) + '°'}` +
+        ` · Sensores: ${eventosOri} leituras${temAbsoluto ? ' (absolutas)' : (eventosOri ? ' (relativas: o norte não é confiável)' : '')}` +
         ` · Câmera ${cameraOk ? 'ok' : 'aguardando'} · Posição ${gpsAR ? 'ok' : 'aguardando'} · Objetos ${entidades}/2` + mundo;
     }
   </script>
