@@ -298,6 +298,7 @@
         alvo = deslocar(posInicial, Number($('selDist').value), graus);
       }
       registrarOrigem(origem);
+	  
 	  /*
       cena.insertAdjacentHTML('beforeend', `
         <a-entity id="ponto" geometry="primitive: box" material="color: #e0453a" scale="6 6 6"
@@ -311,9 +312,7 @@
 				
 				
 		cena.insertAdjacentHTML('beforeend', `
-        <a-text value="Theatro da Paz" align="center" color="#ffffff" width="30" look-at="[gps-new-camera]"
-                gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}" position="0 7 0"></a-text>
-		<a-image src="data/placa_teatro.png" position="0 7 0" width="30" height="20" look-at="[gps-new-camera]"
+        <a-image src="data/placa_teatro.png" position="0 7 0" width="20" height="10" look-at="[gps-new-camera]"
 				gps-new-entity-place="latitude: ${alvo.lat}; longitude: ${alvo.lon}"  material="transparent: true; alphaTest: 0.5; side: double"></a-image>`
 				);
     }
